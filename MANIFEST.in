@@ -1,2 +1,2 @@
 include README.md
-recursive-include streamlit_polygon_editor/frontend *
+recursive-include streamlit_3d_viewer/frontend *
