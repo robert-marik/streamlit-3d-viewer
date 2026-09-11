@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; font-family: "Source Sans Pro", sans-serif; }
+  #app { position: relative; width: 100%; }
+  #canvas-wrap { position: relative; width: 100%; height: 500px; border-radius: 8px; overflow: hidden; }
+  canvas { display: block; width: 100% !important; height: 100% !important; }
+
+  #panel {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+    padding: 10px 4px 4px 4px; color: #222;
+  }
+  .ctrl { display: flex; flex-direction: column; font-size: 12px; min-width: 130px; }
+  .ctrl label { margin-bottom: 3px; opacity: 0.85; }
+  .ctrl input[type="range"] { width: 100%; }
+  button {
+    background: #31333f; color: #fafafa; border: 1px solid #545561;
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #454754; }
+
+  #mesh-info { color: #9a9a9a; font-size: 11px; padding: 6px 4px 0 4px; }
+  #points-info { color: #222; font-size: 12px; padding: 4px 4px 2px 4px; }
+  #hint { color: #888; font-size: 11px; padding: 0 4px 10px 4px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="canvas-wrap"></div>
+
+  <div id="panel">
+    <div class="ctrl">
+      <label id="lbl-elev">Elevation: 60°</label>
+      <input type="range" id="elev" min="1" max="179" value="60" />
+    </div>
+    <div class="ctrl">
+      <label id="lbl-azim">View angle: 0°</label>
+      <input type="range" id="azim" min="0" max="360" value="0" />
+    </div>
+    <div class="ctrl">
+      <label id="lbl-opacity">Opacity: 100%</label>
+      <input type="range" id="opacity" min="0" max="100" value="100" />
+    </div>
+    <div class="ctrl">
+      <label id="lbl-bright">Brightness: 130%</label>
+      <input type="range" id="bright" min="30" max="300" value="130" />
+    </div>
+    <br>
+    <button id="btn-full">Full scene</button>
+    <button id="btn-detail">Zoom to selected points</button>
+    <button id="btn-clear">Clear points</button>
+  </div>
+  <div id="mesh-info"></div>
+  <div id="points-info">Click on the model to add a point.</div>
+  <div id="hint">Mouse wheel = zoom, drag = rotate/pan.</div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+/* ---------- Streamlit bridge (hand-rolled, no streamlit-component-lib) ---------- */
+function stSend(type, data) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*");
+}
+function stReady() { stSend("streamlit:componentReady", { apiVersion: 1 }); }
+function stSetFrameHeight(h) { stSend("streamlit:setFrameHeight", { height: h }); }
+function stSetValue(value) { stSend("streamlit:setComponentValue", { value, dataType: "json" }); }
+
+/* ---------- State ---------- */
+let scene, camera, renderer, controls, root, currentObject = null;
+let loadedModelUrl = null;
+let points = []; // {point:[x,y,z], uv:[u,v]}
+let currentOpacity = 1.0;
+let raycaster = new THREE.Raycaster();
+let pointerDown = null;
+let markersGroup = new THREE.Group();
+
+const wrap = document.getElementById("canvas-wrap");
+
+function initScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color("#1e1e1e");
+
+  camera = new THREE.PerspectiveCamera(45, wrap.clientWidth / wrap.clientHeight, 0.01, 1000);
+  camera.position.set(0, 1, 3);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  // Cap at 1x pixel ratio - on retina/4K screens the default (devicePixelRatio)
+  // renders up to 4x more pixels than shown, which is the main cause of lag.
+  renderer.setPixelRatio(1);
+  renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.3;
+  wrap.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x666666, 1.8);
+  scene.add(hemi);
+  const dir1 = new THREE.DirectionalLight(0xffffff, 2.2);
+  dir1.position.set(3, 6, 4);
+  scene.add(dir1);
+  const dir2 = new THREE.DirectionalLight(0xffffff, 1.4);
+  dir2.position.set(-4, -2, -3);
+  scene.add(dir2);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.addEventListener("change", syncSlidersFromCamera);
+
+  root = new THREE.Group();
+  scene.add(root);
+  scene.add(markersGroup);
+
+  animate();
+  window.addEventListener("resize", onResize);
+
+  renderer.domElement.addEventListener("pointerdown", (e) => {
+    pointerDown = { x: e.clientX, y: e.clientY };
+  });
+  renderer.domElement.addEventListener("pointerup", (e) => {
+    if (!pointerDown) return;
+    const dist = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
+    pointerDown = null;
+    if (dist < 4) onModelClick(e);
+  });
+}
+
+function onResize() {
+  camera.aspect = wrap.clientWidth / wrap.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+/* ---------- Model loading ---------- */
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.6/");
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(dracoLoader);
+
+function loadModel(url, sizeKb) {
+  gltfLoader.load(url, (gltf) => {
+    if (currentObject) root.remove(currentObject);
+    currentObject = gltf.scene;
+    root.clear();
+    root.add(currentObject);
+    applyOpacity(currentOpacity);
+    fitCameraToObject(currentObject);
+    clearPoints();
+    reportMeshInfo(currentObject, sizeKb);
+  }, undefined, (err) => {
+    console.error("Failed to load model:", err);
+  });
+}
+
+function reportMeshInfo(obj, sizeKb) {
+  let vertices = 0, triangles = 0;
+  obj.traverse((child) => {
+    if (child.isMesh && child.geometry) {
+      const geo = child.geometry;
+      const posCount = geo.attributes.position ? geo.attributes.position.count : 0;
+      vertices += posCount;
+      triangles += geo.index ? geo.index.count / 3 : posCount / 3;
+    }
+  });
+  const parts = [
+    `${Math.round(vertices).toLocaleString()} vertices`,
+    `${Math.round(triangles).toLocaleString()} triangles`,
+  ];
+  if (sizeKb) parts.push(`${sizeKb} KB (GLB)`);
+  document.getElementById("mesh-info").textContent = parts.join(" · ");
+}
+
+function fitCameraToObject(obj) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const dist = maxDim * 1.8;
+
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(0, maxDim * 0.4, dist));
+  camera.near = maxDim / 100;
+  camera.far = maxDim * 100;
+  camera.updateProjectionMatrix();
+  controls.update();
+  syncSlidersFromCamera();
+}
+
+function applyOpacity(value) {
+  currentOpacity = value;
+  if (!currentObject) return;
+  currentObject.traverse((child) => {
+    if (child.isMesh && child.material) {
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      mats.forEach((m) => {
+        m.transparent = value < 1.0;
+        m.opacity = value;
+        m.depthWrite = value >= 1.0;
+        m.needsUpdate = true;
+      });
+    }
+  });
+}
+
+/* ---------- Elevation / view angle sliders <-> camera (spherical coords) ---------- */
+const elevInput = document.getElementById("elev");
+const azimInput = document.getElementById("azim");
+const opacityInput = document.getElementById("opacity");
+const lblElev = document.getElementById("lbl-elev");
+const lblAzim = document.getElementById("lbl-azim");
+const lblOpacity = document.getElementById("lbl-opacity");
+
+let syncingFromCamera = false;
+
+function syncSlidersFromCamera() {
+  if (!controls) return;
+  syncingFromCamera = true;
+  const offset = new THREE.Vector3().subVectors(camera.position, controls.target);
+  const spherical = new THREE.Spherical().setFromVector3(offset);
+  const elevDeg = THREE.MathUtils.radToDeg(spherical.phi);
+  const azimDeg = (THREE.MathUtils.radToDeg(spherical.theta) + 360) % 360;
+  elevInput.value = elevDeg.toFixed(0);
+  azimInput.value = azimDeg.toFixed(0);
+  lblElev.textContent = `Elevation: ${elevInput.value}°`;
+  lblAzim.textContent = `View angle: ${azimInput.value}°`;
+  syncingFromCamera = false;
+}
+
+function updateCameraFromSliders() {
+  if (syncingFromCamera || !controls) return;
+  const offset = new THREE.Vector3().subVectors(camera.position, controls.target);
+  const radius = offset.length();
+  const phi = THREE.MathUtils.degToRad(parseFloat(elevInput.value));
+  const theta = THREE.MathUtils.degToRad(parseFloat(azimInput.value));
+  const spherical = new THREE.Spherical(radius, phi, theta);
+  const newOffset = new THREE.Vector3().setFromSpherical(spherical);
+  camera.position.copy(controls.target).add(newOffset);
+  camera.lookAt(controls.target);
+  controls.update();
+}
+
+elevInput.addEventListener("input", () => {
+  lblElev.textContent = `Elevation: ${elevInput.value}°`;
+  updateCameraFromSliders();
+});
+azimInput.addEventListener("input", () => {
+  lblAzim.textContent = `View angle: ${azimInput.value}°`;
+  updateCameraFromSliders();
+});
+opacityInput.addEventListener("input", () => {
+  const v = parseInt(opacityInput.value, 10) / 100;
+  lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
+  applyOpacity(v);
+});
+
+const brightInput = document.getElementById("bright");
+const lblBright = document.getElementById("lbl-bright");
+brightInput.addEventListener("input", () => {
+  lblBright.textContent = `Brightness: ${brightInput.value}%`;
+  renderer.toneMappingExposure = parseInt(brightInput.value, 10) / 100;
+});
+
+document.getElementById("btn-full").addEventListener("click", () => {
+  if (currentObject) fitCameraToObject(currentObject);
+});
+
+document.getElementById("btn-detail").addEventListener("click", () => {
+  const pts = points.filter((p) => p.point).map((p) => new THREE.Vector3(...p.point));
+  if (pts.length === 0) return;
+
+  const box = new THREE.Box3().setFromPoints(pts);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  // Minimum extent so a single point (or tightly clustered points) doesn't
+  // zoom in to an unusably tiny distance.
+  const refDim = currentObject
+    ? new THREE.Box3().setFromObject(currentObject).getSize(new THREE.Vector3()).length()
+    : 1;
+  const extent = Math.max(size.length(), refDim * 0.05);
+  const dist = extent * 1.6;
+
+  const dir = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+  if (dir.lengthSq() === 0) dir.set(0, 0.3, 1).normalize();
+  controls.target.copy(center);
+  camera.position.copy(center).add(dir.multiplyScalar(dist));
+  controls.update();
+  syncSlidersFromCamera();
+});
+
+document.getElementById("btn-clear").addEventListener("click", clearPoints);
+
+/* ---------- Clicking and points ---------- */
+function onModelClick(e) {
+  if (!currentObject) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObject(currentObject, true);
+  if (intersects.length === 0) return;
+  const hit = intersects[0];
+  const uv = hit.uv ? [hit.uv.x, hit.uv.y] : null;
+  addPoint([hit.point.x, hit.point.y, hit.point.z], uv);
+}
+
+function addPoint(point, uv) {
+  points.push({ point, uv });
+  if (point) addMarker(point);
+  updatePointsInfo();
+  stSetValue(points);
+}
+
+function addMarker(point) {
+  const geom = new THREE.SphereGeometry(markerRadius(), 16, 16);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xff3b3b });
+  const marker = new THREE.Mesh(geom, mat);
+  marker.position.set(point[0], point[1], point[2]);
+  markersGroup.add(marker);
+}
+
+function markerRadius() {
+  if (!currentObject) return 0.01;
+  const box = new THREE.Box3().setFromObject(currentObject);
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  return maxDim * 0.008;
+}
+
+function clearPoints() {
+  points = [];
+  markersGroup.clear();
+  updatePointsInfo();
+  stSetValue(points);
+}
+
+function updatePointsInfo() {
+  document.getElementById("points-info").textContent =
+    points.length === 0
+      ? "Click on the model to add a point."
+      : `${points.length} point(s) selected`;
+}
+
+/* ---------- Render event from Streamlit ---------- */
+function handleRender(args) {
+  if (args.background_color) {
+    scene.background = new THREE.Color(args.background_color);
+  }
+  if (typeof args.opacity === "number") {
+    opacityInput.value = Math.round(args.opacity * 100);
+    lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
+    applyOpacity(args.opacity);
+  }
+  if (args.model_url && args.model_url !== loadedModelUrl) {
+    loadedModelUrl = args.model_url;
+    loadModel(args.model_url, args.model_size_kb);
+  }
+  stSetFrameHeight(document.getElementById("app").scrollHeight);
+}
+
+window.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "streamlit:render") return;
+  handleRender(event.data.args || {});
+});
+
+initScene();
+stReady();
+stSetFrameHeight(document.getElementById("app").scrollHeight);
+</script>
+</body>
+</html>

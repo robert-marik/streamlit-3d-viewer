@@ -1,0 +1,6 @@
+streamlit>=1.30
+trimesh>=4.0
+pillow>=10.0
+numpy>=1.24
+pandas>=2.0
+fast-simplification>=0.1.7  # optional, only needed for mesh decimation (target_faces)

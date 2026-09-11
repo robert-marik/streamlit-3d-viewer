@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streamlit-3d-viewer"
+version = "0.1.0"
+description = "A Streamlit custom component for 3D model viewing."
+readme = "README.md"
+authors = [{ name = "Robert Mařík", email = "robert.marik.cz@gmail.com" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "streamlit>=1.30",
+    "trimesh>=4.0",
+    "pillow>=10.0"
+]
+requires-python = ">=3.8"
+
+[project.urls]
+"Homepage" = "https://github.com/robert-marik/streamlit-3d-viewer"
