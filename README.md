@@ -26,6 +26,15 @@ JPG/PNG texture) with three.js, including conversion to a leaner
 - A single **opacity** slider, live in the viewer next to the scan.
 - Click on the model to add a point (3D position + UV); a red marker is
   shown at that spot. Points are returned to Python as a list.
+- A **point size** slider to control how big the click-to-add markers are
+  drawn — it resizes markers already placed too, not just new ones.
+- Control panel has its own solid dark background with light text, so
+  the legend stays readable regardless of Streamlit's light/dark theme
+  or page background color.
+- **Direct OBJ + JPG/PNG rendering**, no GLB conversion required: pass
+  `obj_path`/`texture_path` to `show_3d_viewer` to preview a raw scan
+  as-is. Useful for quick looks or small files; for large scans, convert
+  to GLB first (smaller, faster to load).
 - **Batch directory converter page**: point it at a folder, pick which
   OBJ/MTL/texture files belong together, set conversion parameters,
   preview the result, and only then save it — with an optional cleanup
@@ -69,7 +78,10 @@ streamlit_3d_viewer/
 │                         #   finalize_output(), delete_files(), ConversionReport
 └── frontend/
     └── index.html         # three.js viewer (plain JS, no npm build)
-example_app.py             # single-file upload demo ("Home" page)
+example_app.py                  # single-file upload demo: OBJ -> GLB conversion ("Home" page)
+example_obj_texture_demo.py     # direct OBJ+JPG rendering demo (no conversion step)
+demo_assets/
+└── obj_texture_demo/            # bundled sample OBJ+JPG for the demo above
 pages/
 └── 1_Batch_Directory_Converter.py   # folder-based batch converter page
 requirements.txt
@@ -84,6 +96,18 @@ streamlit run example_app.py
 ```
 
 Uploads an OBJ + texture, converts, previews, shows selected points.
+
+### Direct OBJ + JPG demo (no conversion)
+
+```bash
+streamlit run example_obj_texture_demo.py
+```
+
+Renders a raw `.obj` + `.jpg` straight in the viewer, skipping the GLB
+conversion step entirely. Ships with a bundled procedurally-generated
+sample (a textured sphere in `demo_assets/obj_texture_demo/`) so it runs
+out of the box; uncheck "Use bundled sample" in the sidebar to upload
+your own OBJ/texture instead.
 
 ### Batch directory converter
 
@@ -116,8 +140,11 @@ from streamlit_3d_viewer.converter import convert
 report = convert("scan.obj", "scan_out", output_format="glb", use_draco=True)
 print(report.total_reduction_pct, report.draco_reduction_pct)
 
-# 2) display
-points = show_3d_viewer(report.output_path, opacity=0.9, height=680)
+# 2) display (GLB — recommended for large scans)
+points = show_3d_viewer(report.output_path, opacity=0.9, marker_size=1.2, height=680)
+
+# ...or, skip conversion entirely and render the raw OBJ + texture directly:
+points = show_3d_viewer(obj_path="scan.obj", texture_path="scan.jpg")
 ```
 
 ## Notes / limitations
@@ -129,9 +156,15 @@ points = show_3d_viewer(report.output_path, opacity=0.9, height=680)
 - If the model is still slow after Draco compression, try `target_faces`
   (mesh decimation, requires `pip install fast-simplification`) and/or a
   lower `max_texture_size`.
-- Opacity is configured in exactly one place: the slider inside the
-  viewer component. There is intentionally no separate Streamlit-level
-  opacity control, to avoid two out-of-sync settings.
+- Opacity and point size are each configured in exactly one place: their
+  respective slider inside the viewer component. There is intentionally
+  no separate Streamlit-level control for either, to avoid two
+  out-of-sync settings.
+- Direct OBJ+JPG rendering (`obj_path`/`texture_path`) sends the raw,
+  uncompressed files to the browser and ignores any `.mtl` the OBJ
+  references — the texture you pass in (if any) is what gets applied.
+  The OBJ must already contain UV coordinates for the texture to map
+  correctly. For large scans, prefer converting to GLB first.
 - `gltf` (non-binary) output writes several sibling files (buffers,
   images) into a subfolder named after the output file — this avoids
   filename collisions between repeated conversions in the same directory.

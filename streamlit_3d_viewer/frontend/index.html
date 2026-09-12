@@ -3,6 +3,22 @@
 <head>
 <meta charset="UTF-8" />
 <style>
+  /*
+   * The panel gets its own solid (opaque, not semi-transparent) dark
+   * background with light text. This guarantees readable contrast no
+   * matter what color the surrounding Streamlit page happens to be
+   * (light theme, dark theme, or a custom one) — relying on Streamlit's
+   * theme CSS variables turned out to be unreliable: they aren't always
+   * forwarded into the component's iframe, so the labels could silently
+   * fall back to a light color sitting on a light background.
+   */
+  :root {
+    --stv-text: #222222;
+    --stv-muted-text: #222222;
+    --stv-panel-bg: #dddddd;
+    --stv-border: #dddddd;
+  }
+
   html, body { margin: 0; padding: 0; background: transparent; font-family: "Source Sans Pro", sans-serif; }
   #app { position: relative; width: 100%; }
   #canvas-wrap { position: relative; width: 100%; height: 500px; border-radius: 8px; overflow: hidden; }
@@ -10,20 +26,24 @@
 
   #panel {
     display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
-    padding: 10px 4px 4px 4px; color: #e6e6e6;
+    padding: 10px 10px 8px 10px; margin-top: 8px;
+    color: var(--stv-text);
+    background: var(--stv-panel-bg);
+    border: 1px solid var(--stv-border);
+    border-radius: 8px;
   }
   .ctrl { display: flex; flex-direction: column; font-size: 12px; min-width: 130px; }
-  .ctrl label { margin-bottom: 3px; opacity: 0.85; }
+  .ctrl label { margin-bottom: 3px; color: var(--stv-text); font-weight: 600; opacity: 1; }
   .ctrl input[type="range"] { width: 100%; }
   button {
-    background: #31333f; color: #fafafa; border: 1px solid #545561;
-    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+    background: #8fb1f5; color: var(--stv-text); border: 1px solid var(--stv-border);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; font-weight: 600;
   }
-  button:hover { background: #454754; }
+  button:hover { background: #dfe2fb; }
 
-  #mesh-info { color: #9a9a9a; font-size: 11px; padding: 6px 4px 0 4px; }
-  #points-info { color: #ccc; font-size: 12px; padding: 4px 4px 2px 4px; }
-  #hint { color: #888; font-size: 11px; padding: 0 4px 10px 4px; }
+  #mesh-info { color: var(--stv-muted-text); font-size: 11px; padding: 6px 4px 0 4px; }
+  #points-info { color: var(--stv-muted-text); font-size: 12px; padding: 4px 4px 2px 4px; font-weight: 600; }
+  #hint { color: var(--stv-muted-text); font-size: 11px; padding: 0 4px 10px 4px; }
 </style>
 </head>
 <body>
@@ -47,6 +67,10 @@
       <label id="lbl-bright">Brightness: 130%</label>
       <input type="range" id="bright" min="30" max="300" value="130" />
     </div>
+    <div class="ctrl">
+      <label id="lbl-marker-size">Point size: 100%</label>
+      <input type="range" id="marker-size" min="20" max="400" value="100" />
+    </div>
     <button id="btn-full">Full scene</button>
     <button id="btn-detail">Zoom to selected points</button>
     <button id="btn-clear">Clear points</button>
@@ -69,6 +93,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 /* ---------- Streamlit bridge ---------- */
@@ -81,9 +106,10 @@ function stSetValue(value) { stSend("streamlit:setComponentValue", { value, data
 
 /* ---------- State ---------- */
 let scene, camera, renderer, controls, root, currentObject = null;
-let loadedModelUrl = null;
+let loadedModelKey = null; // identifies whichever model (glb, or obj+texture) is currently loaded
 let points = []; // {point:[x,y,z], uv:[u,v]}
 let currentOpacity = 1.0;
+let markerScale = 1.0; // user-controlled relative marker size (1.0 = 100%)
 let raycaster = new THREE.Raycaster();
 let pointerDown = null;
 let markersGroup = new THREE.Group();
@@ -206,23 +232,65 @@ const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath("https://www.gstatic.com/draco/versioned/decoders/1.5.6/");
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);
+const objLoader = new OBJLoader();
+const textureLoader = new THREE.TextureLoader();
+
+function onModelLoaded(object, sizeKb, formatLabel) {
+  if (currentObject) root.remove(currentObject);
+  currentObject = object;
+  root.clear();
+  root.add(currentObject);
+  applyOpacity(currentOpacity);
+  fitCameraToObject(currentObject);
+  clearPoints();
+  reportMeshInfo(currentObject, sizeKb, formatLabel);
+}
 
 function loadModel(url, sizeKb) {
   gltfLoader.load(url, (gltf) => {
-    if (currentObject) root.remove(currentObject);
-    currentObject = gltf.scene;
-    root.clear();
-    root.add(currentObject);
-    applyOpacity(currentOpacity);
-    fitCameraToObject(currentObject);
-    clearPoints();
-    reportMeshInfo(currentObject, sizeKb);
+    onModelLoaded(gltf.scene, sizeKb, "GLB");
   }, undefined, (err) => {
     console.error("Failed to load model:", err);
   });
 }
 
-function reportMeshInfo(obj, sizeKb) {
+/* Load a raw OBJ and, optionally, apply a JPG/PNG texture directly to it
+ * (no GLB conversion step). The OBJ is expected to already carry UV
+ * coordinates; any material/mtllib referenced by the file itself is
+ * ignored — the given texture (if any) is what gets applied. */
+function loadModelObjTex(objUrl, textureUrl, sizeKb) {
+  objLoader.load(objUrl, (object) => {
+    const finish = (texture) => {
+      if (texture) {
+        texture.colorSpace = THREE.SRGBColorSpace;
+      }
+      object.traverse((child) => {
+        if (child.isMesh) {
+          child.material = new THREE.MeshStandardMaterial({
+            map: texture || null,
+            color: texture ? 0xffffff : 0xb0b0b0,
+            metalness: 0.0,
+            roughness: 1.0,
+          });
+        }
+      });
+      onModelLoaded(object, sizeKb, "OBJ+JPG");
+    };
+
+    if (textureUrl) {
+      textureLoader.load(textureUrl, finish, undefined, (err) => {
+        console.error("Failed to load texture:", err);
+        finish(null);
+      });
+    } else {
+      finish(null);
+    }
+  }, undefined, (err) => {
+    console.error("Failed to load OBJ model:", err);
+  });
+}
+
+function reportMeshInfo(obj, sizeKb, formatLabel) {
   let vertices = 0, triangles = 0;
   obj.traverse((child) => {
     if (child.isMesh && child.geometry) {
@@ -236,7 +304,7 @@ function reportMeshInfo(obj, sizeKb) {
     `${Math.round(vertices).toLocaleString()} vertices`,
     `${Math.round(triangles).toLocaleString()} triangles`,
   ];
-  if (sizeKb) parts.push(`${sizeKb} KB (GLB)`);
+  if (sizeKb) parts.push(`${sizeKb} KB${formatLabel ? ` (${formatLabel})` : ""}`);
   document.getElementById("mesh-info").textContent = parts.join(" · ");
 }
 
@@ -330,6 +398,13 @@ brightInput.addEventListener("input", () => {
   renderer.toneMappingExposure = parseInt(brightInput.value, 10) / 100;
 });
 
+const markerSizeInput = document.getElementById("marker-size");
+const lblMarkerSize = document.getElementById("lbl-marker-size");
+markerSizeInput.addEventListener("input", () => {
+  lblMarkerSize.textContent = `Point size: ${markerSizeInput.value}%`;
+  setMarkerScale(parseInt(markerSizeInput.value, 10) / 100);
+});
+
 document.getElementById("btn-full").addEventListener("click", () => {
   if (currentObject) fitCameraToObject(currentObject);
 });
@@ -377,19 +452,28 @@ function addPoint(point, uv) {
 }
 
 function addMarker(point) {
-  const geom = new THREE.SphereGeometry(markerRadius(), 16, 16);
+  // Base geometry radius stays fixed (proportional to model size); the
+  // user-controlled "Point size" slider scales the mesh on top of that,
+  // so existing markers can be resized without rebuilding geometry.
+  const geom = new THREE.SphereGeometry(markerBaseRadius(), 16, 16);
   const mat = new THREE.MeshBasicMaterial({ color: 0xff3b3b });
   const marker = new THREE.Mesh(geom, mat);
   marker.position.set(point[0], point[1], point[2]);
+  marker.scale.setScalar(markerScale);
   markersGroup.add(marker);
 }
 
-function markerRadius() {
+function markerBaseRadius() {
   if (!currentObject) return 0.01;
   const box = new THREE.Box3().setFromObject(currentObject);
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
   return maxDim * 0.008;
+}
+
+function setMarkerScale(scale) {
+  markerScale = scale;
+  markersGroup.children.forEach((m) => m.scale.setScalar(markerScale));
 }
 
 function clearPoints() {
@@ -416,10 +500,31 @@ function handleRender(args) {
     lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
     applyOpacity(args.opacity);
   }
-  if (args.model_url && args.model_url !== loadedModelUrl) {
-    loadedModelUrl = args.model_url;
-    loadModel(args.model_url, args.model_size_kb);
+  if (typeof args.marker_size === "number") {
+    // Same convention as opacity: this reflects whatever Streamlit last
+    // sent as the initial value; the "Point size" slider is what the
+    // user actually interacts with in between reruns.
+    const pct = Math.round(args.marker_size * 100);
+    markerSizeInput.value = pct;
+    lblMarkerSize.textContent = `Point size: ${pct}%`;
+    setMarkerScale(args.marker_size);
   }
+
+  const modelType = args.model_type || "glb";
+  if (modelType === "objtex") {
+    const key = `objtex|${args.obj_url || ""}|${args.texture_url || ""}`;
+    if (args.obj_url && key !== loadedModelKey) {
+      loadedModelKey = key;
+      loadModelObjTex(args.obj_url, args.texture_url, args.model_size_kb);
+    }
+  } else {
+    const key = `glb|${args.model_url || ""}`;
+    if (args.model_url && key !== loadedModelKey) {
+      loadedModelKey = key;
+      loadModel(args.model_url, args.model_size_kb);
+    }
+  }
+
   stSetFrameHeight(document.getElementById("app").scrollHeight);
 }
 
