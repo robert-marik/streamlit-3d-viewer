@@ -64,9 +64,13 @@ For **mesh decimation** (`target_faces`), install:
 pip install fast-simplification
 ```
 
-The frontend (three.js, GLTFLoader, DRACOLoader, OrbitControls) is loaded
-from a CDN (`unpkg.com`, `gstatic.com`), so the browser running the
-Streamlit app needs internet access.
+The frontend (three.js, GLTFLoader, DRACOLoader, OBJLoader, OrbitControls,
+and the Draco WASM decoder) is **vendored locally** in
+`streamlit_3d_viewer/frontend/vendor/` — no CDN and no internet access is
+required at runtime, either for the Python side or for the browser
+displaying the viewer. (Earlier versions loaded these from `unpkg.com`
+and `gstatic.com`; see `vendor/three/LICENSE` for attribution/licensing
+of the bundled files.)
 
 ## Project layout
 
@@ -77,7 +81,9 @@ streamlit_3d_viewer/
 │                         #   list_scan_files(), guess_texture_for_obj(),
 │                         #   finalize_output(), delete_files(), ConversionReport
 └── frontend/
-    └── index.html         # three.js viewer (plain JS, no npm build)
+    ├── index.html          # three.js viewer (plain JS, no npm build)
+    └── vendor/three/       # vendored three.js + loaders + Draco decoder
+                            #   (fully offline, no CDN needed)
 example_app.py                  # single-file upload demo: OBJ -> GLB conversion ("Home" page)
 example_obj_texture_demo.py     # direct OBJ+JPG rendering demo (no conversion step)
 demo_assets/
