@@ -10,7 +10,7 @@
 
   #panel {
     display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
-    padding: 10px 4px 4px 4px; color: #222;
+    padding: 10px 4px 4px 4px; color: #e6e6e6;
   }
   .ctrl { display: flex; flex-direction: column; font-size: 12px; min-width: 130px; }
   .ctrl label { margin-bottom: 3px; opacity: 0.85; }
@@ -22,7 +22,7 @@
   button:hover { background: #454754; }
 
   #mesh-info { color: #9a9a9a; font-size: 11px; padding: 6px 4px 0 4px; }
-  #points-info { color: #222; font-size: 12px; padding: 4px 4px 2px 4px; }
+  #points-info { color: #ccc; font-size: 12px; padding: 4px 4px 2px 4px; }
   #hint { color: #888; font-size: 11px; padding: 0 4px 10px 4px; }
 </style>
 </head>
@@ -52,8 +52,8 @@
     <button id="btn-clear">Clear points</button>
   </div>
   <div id="mesh-info"></div>
-  <div id="points-info">Click on the model to add a point.</div>
-  <div id="hint">Mouse wheel = zoom, drag = rotate/pan.</div>
+  <div id="points-info">Shift + Click on the model to add a point.</div>
+  <div id="hint">Mouse wheel = zoom, drag = rotate/pan, drag marker = move point.</div>
 </div>
 
 <script type="importmap">
@@ -71,7 +71,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-/* ---------- Streamlit bridge (hand-rolled, no streamlit-component-lib) ---------- */
+/* ---------- Streamlit bridge ---------- */
 function stSend(type, data) {
   window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*");
 }
@@ -88,7 +88,17 @@ let raycaster = new THREE.Raycaster();
 let pointerDown = null;
 let markersGroup = new THREE.Group();
 
+let draggedMarkerIndex = -1;
+
 const wrap = document.getElementById("canvas-wrap");
+
+function getNormalizedMouse(e) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  return new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+}
 
 function initScene() {
   scene = new THREE.Scene();
@@ -98,8 +108,6 @@ function initScene() {
   camera.position.set(0, 1, 3);
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-  // Cap at 1x pixel ratio - on retina/4K screens the default (devicePixelRatio)
-  // renders up to 4x more pixels than shown, which is the main cause of lag.
   renderer.setPixelRatio(1);
   renderer.setSize(wrap.clientWidth, wrap.clientHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -131,12 +139,53 @@ function initScene() {
 
   renderer.domElement.addEventListener("pointerdown", (e) => {
     pointerDown = { x: e.clientX, y: e.clientY };
+
+    // Kontrola, zda nezačíná tažení některého ze stávajících markerů
+    if (markersGroup.children.length > 0) {
+      const mouse = getNormalizedMouse(e);
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(markersGroup.children, false);
+      if (intersects.length > 0) {
+        draggedMarkerIndex = markersGroup.children.indexOf(intersects[0].object);
+        if (draggedMarkerIndex !== -1) {
+          controls.enabled = false; // Vypne rotaci kamery během posunu bodu
+        }
+      }
+    }
   });
+
+  renderer.domElement.addEventListener("pointermove", (e) => {
+    if (draggedMarkerIndex !== -1 && currentObject) {
+      const mouse = getNormalizedMouse(e);
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObject(currentObject, true);
+      if (intersects.length > 0) {
+        const hit = intersects[0];
+        const pointArr = [hit.point.x, hit.point.y, hit.point.z];
+        const uvArr = hit.uv ? [hit.uv.x, hit.uv.y] : null;
+
+        // Aktualizace pozice viditelného markeru
+        markersGroup.children[draggedMarkerIndex].position.set(hit.point.x, hit.point.y, hit.point.z);
+
+        // Aktualizace datového pole bodů
+        points[draggedMarkerIndex] = { point: pointArr, uv: uvArr };
+      }
+    }
+  });
+
   renderer.domElement.addEventListener("pointerup", (e) => {
-    if (!pointerDown) return;
-    const dist = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
+    if (draggedMarkerIndex !== -1) {
+      draggedMarkerIndex = -1;
+      controls.enabled = true; // Znovu zapne rotaci kamery
+      stSetValue(points); // Odeslání aktualizovaných bodů do Streamlitu
+    } else if (pointerDown) {
+      const dist = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
+      // Bod se přidá pouze v případě, že je stisknut Shift
+      if (dist < 4 && e.shiftKey) {
+        onModelClick(e);
+      }
+    }
     pointerDown = null;
-    if (dist < 4) onModelClick(e);
   });
 }
 
@@ -223,7 +272,7 @@ function applyOpacity(value) {
   });
 }
 
-/* ---------- Elevation / view angle sliders <-> camera (spherical coords) ---------- */
+/* ---------- Sliders <-> Camera ---------- */
 const elevInput = document.getElementById("elev");
 const azimInput = document.getElementById("azim");
 const opacityInput = document.getElementById("opacity");
@@ -292,8 +341,6 @@ document.getElementById("btn-detail").addEventListener("click", () => {
   const box = new THREE.Box3().setFromPoints(pts);
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
-  // Minimum extent so a single point (or tightly clustered points) doesn't
-  // zoom in to an unusably tiny distance.
   const refDim = currentObject
     ? new THREE.Box3().setFromObject(currentObject).getSize(new THREE.Vector3()).length()
     : 1;
@@ -313,11 +360,7 @@ document.getElementById("btn-clear").addEventListener("click", clearPoints);
 /* ---------- Clicking and points ---------- */
 function onModelClick(e) {
   if (!currentObject) return;
-  const rect = renderer.domElement.getBoundingClientRect();
-  const mouse = new THREE.Vector2(
-    ((e.clientX - rect.left) / rect.width) * 2 - 1,
-    -((e.clientY - rect.top) / rect.height) * 2 + 1
-  );
+  const mouse = getNormalizedMouse(e);
   raycaster.setFromCamera(mouse, camera);
   const intersects = raycaster.intersectObject(currentObject, true);
   if (intersects.length === 0) return;
@@ -359,7 +402,7 @@ function clearPoints() {
 function updatePointsInfo() {
   document.getElementById("points-info").textContent =
     points.length === 0
-      ? "Click on the model to add a point."
+      ? "Shift + Click on the model to add a point."
       : `${points.length} point(s) selected`;
 }
 

@@ -86,7 +86,7 @@ if report is not None:
                 "After decimation": [report.vertices_after, report.faces_after],
             }
         )
-        st.dataframe(mesh_df, hide_index=True, use_container_width=True)
+        st.dataframe(mesh_df, hide_index=True, width="stretch")
         if not report.decimation_applied:
             st.caption("No mesh decimation was applied (target_faces not set or mesh already smaller).")
 
@@ -111,7 +111,7 @@ if report is not None:
                 for p in points
             ]
         )
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width="stretch")
     else:
         st.caption("No points selected yet.")
 else:
