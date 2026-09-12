@@ -20,6 +20,7 @@ from pathlib import Path
 
 import trimesh
 from PIL import Image
+from scipy.spatial import cKDTree
 
 
 @dataclass
@@ -84,15 +85,35 @@ def obj_to_glb(
 
     mesh = trimesh.load(obj_path, force="mesh", process=False)
     before = _mesh_stats(mesh)
+    original_uv = getattr(mesh.visual, "uv", None)
 
     if target_faces and len(mesh.faces) > target_faces:
+        original_vertices = mesh.vertices.copy()
         try:
-            mesh = mesh.simplify_quadric_decimation(target_faces)
+            # IMPORTANT: `face_count` must be passed as a keyword. In
+            # current trimesh versions the first positional argument is
+            # `percent` (a 0-1 target *reduction ratio*, not a face count).
+            # Passing a face count positionally either raises or is
+            # silently misinterpreted, which made this setting a no-op.
+            simplified = mesh.simplify_quadric_decimation(face_count=target_faces)
         except Exception as exc:  # e.g. fast-simplification not installed
             raise RuntimeError(
                 "Mesh simplification failed (try `pip install fast-simplification`): "
                 f"{exc}"
             ) from exc
+
+        new_uv = None
+        if original_uv is not None:
+            # simplify_quadric_decimation returns a bare Trimesh with only
+            # vertices/faces (no visual/UV data). Recover an approximate
+            # per-vertex UV for the simplified mesh via nearest-neighbor
+            # lookup against the original (pre-decimation) vertices.
+            tree = cKDTree(original_vertices)
+            _, nn_idx = tree.query(simplified.vertices)
+            new_uv = original_uv[nn_idx]
+
+        mesh = simplified
+        original_uv = new_uv
 
     after = _mesh_stats(mesh)
 
@@ -103,8 +124,7 @@ def obj_to_glb(
         if max_texture_size:
             image.thumbnail((max_texture_size, max_texture_size), Image.LANCZOS)
 
-        uv = getattr(mesh.visual, "uv", None)
-        if uv is None:
+        if original_uv is None:
             raise ValueError("The OBJ file has no UV coordinates — the texture cannot be mapped.")
 
         # Explicitly non-metallic/diffuse material: trimesh otherwise exports
@@ -115,7 +135,7 @@ def obj_to_glb(
             metallicFactor=0.0,
             roughnessFactor=1.0,
         )
-        mesh.visual = trimesh.visual.TextureVisuals(uv=uv, image=image, material=material)
+        mesh.visual = trimesh.visual.TextureVisuals(uv=original_uv, image=image, material=material)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mesh.export(output_path, file_type="glb")
