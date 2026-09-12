@@ -44,11 +44,34 @@
   #mesh-info { color: var(--stv-muted-text); font-size: 11px; padding: 6px 4px 0 4px; }
   #points-info { color: var(--stv-muted-text); font-size: 12px; padding: 4px 4px 2px 4px; font-weight: 600; }
   #hint { color: var(--stv-muted-text); font-size: 11px; padding: 0 4px 10px 4px; }
+
+  /*
+   * Small label shown next to the mouse cursor while hovering a placed
+   * point marker, with its own opaque background — the marker can sit
+   * over any part of the model, so the label can't rely on whatever
+   * color happens to be underneath it for contrast.
+   */
+  #marker-tooltip {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    background: var(--stv-panel-bg);
+    color: var(--stv-text);
+    border: 1px solid var(--stv-border);
+    border-radius: 5px;
+    padding: 1px 7px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+    z-index: 10;
+  }
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="canvas-wrap"></div>
+  <div id="canvas-wrap">
+    <div id="marker-tooltip"></div>
+  </div>
 
   <div id="panel">
     <div class="ctrl">
@@ -117,6 +140,19 @@ let markersGroup = new THREE.Group();
 let draggedMarkerIndex = -1;
 
 const wrap = document.getElementById("canvas-wrap");
+const markerTooltip = document.getElementById("marker-tooltip");
+
+function showMarkerTooltip(markerIndex, clientX, clientY) {
+  const rect = wrap.getBoundingClientRect();
+  markerTooltip.textContent = String(markerIndex + 1); // 1-based numbering
+  markerTooltip.style.left = `${clientX - rect.left + 14}px`;
+  markerTooltip.style.top = `${clientY - rect.top - 10}px`;
+  markerTooltip.style.display = "block";
+}
+
+function hideMarkerTooltip() {
+  markerTooltip.style.display = "none";
+}
 
 function getNormalizedMouse(e) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -196,6 +232,18 @@ function initScene() {
         // Aktualizace datového pole bodů
         points[draggedMarkerIndex] = { point: pointArr, uv: uvArr };
       }
+      showMarkerTooltip(draggedMarkerIndex, e.clientX, e.clientY);
+    } else {
+      // Not dragging: show the point's number when hovering a marker.
+      const mouse = getNormalizedMouse(e);
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(markersGroup.children, false);
+      if (intersects.length > 0) {
+        const idx = markersGroup.children.indexOf(intersects[0].object);
+        showMarkerTooltip(idx, e.clientX, e.clientY);
+      } else {
+        hideMarkerTooltip();
+      }
     }
   });
 
@@ -213,6 +261,8 @@ function initScene() {
     }
     pointerDown = null;
   });
+
+  renderer.domElement.addEventListener("pointerleave", hideMarkerTooltip);
 }
 
 function onResize() {
@@ -479,6 +529,7 @@ function setMarkerScale(scale) {
 function clearPoints() {
   points = [];
   markersGroup.clear();
+  hideMarkerTooltip();
   updatePointsInfo();
   stSetValue(points);
 }
