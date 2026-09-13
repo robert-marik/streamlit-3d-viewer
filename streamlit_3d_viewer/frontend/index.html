@@ -909,20 +909,37 @@ function polygonArea2D(points) {
 function renderCrossSectionTable(payload) {
   const tbody = document.getElementById("cross-section-table-body");
   if (!tbody) return;
-  if (!payload || payload.loops.length === 0) {
-    tbody.innerHTML = "<tr><td colspan=\"2\">No intersection</td></tr>";
+  tbody.replaceChildren();
+  const loops = Array.isArray(payload?.loops) ? payload.loops : [];
+  if (loops.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 2;
+    td.textContent = "No intersection";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
     return;
   }
-  const closedLoops = payload.loops.filter((loop) => loop.closed);
+  const closedLoops = loops.filter((loop) => loop.closed);
   if (closedLoops.length === 0) {
-    tbody.innerHTML = "<tr><td colspan=\"2\">No closed polygon</td></tr>";
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 2;
+    td.textContent = "No closed polygon";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
     return;
   }
-  const rows = closedLoops.map((loop, i) => {
-    const area = polygonArea2D(loop.points_2d);
-    return `<tr><td>${i + 1}</td><td>${area.toFixed(4)}</td></tr>`;
-  }).join("");
-  tbody.innerHTML = rows;
+  closedLoops.forEach((loop, i) => {
+    const tr = document.createElement("tr");
+    const polygonCell = document.createElement("td");
+    polygonCell.textContent = String(i + 1);
+    const areaCell = document.createElement("td");
+    areaCell.textContent = polygonArea2D(loop.points_2d).toFixed(4);
+    tr.appendChild(polygonCell);
+    tr.appendChild(areaCell);
+    tbody.appendChild(tr);
+  });
 }
 
 function currentClipPlanePayload() {
