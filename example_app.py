@@ -63,6 +63,7 @@ with st.sidebar:
     enable_clipping = st.checkbox("Enable cutting plane", value=False)
     clip_plane_position = None
     clip_plane_normal = None
+    show_both_clip_halves = False
     show_cross_section = False
     if enable_clipping:
         st.caption(
@@ -87,6 +88,7 @@ with st.sidebar:
             math.sin(t) * math.sin(r),
         ]
 
+        show_both_clip_halves = st.checkbox("Show both halves", value=False)
         show_cross_section = st.checkbox("Show cross-section", value=False)
 
 report = st.session_state.report
@@ -127,6 +129,7 @@ if report is not None:
         enable_clipping=enable_clipping,
         clip_plane_position=clip_plane_position,
         clip_plane_normal=clip_plane_normal,
+        show_both_clip_halves=show_both_clip_halves,
         show_cross_section=show_cross_section,
         key="viewer",
     )

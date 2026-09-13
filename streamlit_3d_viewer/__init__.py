@@ -53,7 +53,8 @@ def show_3d_viewer(
     enable_clipping=None,
     clip_plane_position=None,
     clip_plane_normal=None,
-    show_cross_section=None,
+    show_both_clip_halves=False,
+    show_cross_section=False,
     key=None,
 ):
     """
@@ -121,6 +122,9 @@ def show_3d_viewer(
         (horizontal, like a water level) when not given.
         Follows the same "re-applied only when the value changes"
         convention as `clip_plane_position`.
+    show_both_clip_halves : bool
+        Keep both halves of the model visible while the cutting plane is
+        enabled. If ``False`` (default), one half is clipped away.
     show_cross_section : bool | None
         Compute and draw the polygon(s) where the cutting plane
         intersects the model, and include them in the returned value.
@@ -158,6 +162,8 @@ def show_3d_viewer(
         clip_plane_normal=(
             [float(v) for v in clip_plane_normal] if clip_plane_normal is not None else None
         ),
+        show_both_clip_halves=bool(show_both_clip_halves),
+        show_cross_section=bool(show_cross_section),
         default=_EMPTY_VALUE,
         key=key,
     )
