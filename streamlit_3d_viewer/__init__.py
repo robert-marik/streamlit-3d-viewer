@@ -53,7 +53,7 @@ def show_3d_viewer(
     enable_clipping=None,
     clip_plane_position=None,
     clip_plane_normal=None,
-    show_both_clip_halves=False,
+    show_both_clip_halves=None,
     show_cross_section=False,
     key=None,
 ):
@@ -125,6 +125,7 @@ def show_3d_viewer(
     show_both_clip_halves : bool
         Keep both halves of the model visible while the cutting plane is
         enabled. If ``False`` (default), one half is clipped away.
+        If ``None`` (default), the frontend checkbox controls this state.
     show_cross_section : bool | None
         Compute and draw the polygon(s) where the cutting plane
         intersects the model, and include them in the returned value.
@@ -171,6 +172,8 @@ def show_3d_viewer(
         kwargs["enable_clipping"] = bool(enable_clipping)
     if show_cross_section is not None:
         kwargs["show_cross_section"] = bool(show_cross_section)
+    if show_both_clip_halves is not None:
+        kwargs["show_both_clip_halves"] = bool(show_both_clip_halves)
 
     if obj_path is not None:
         obj_path = Path(obj_path)
