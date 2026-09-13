@@ -133,7 +133,7 @@
   </div>
   <div id="mesh-info"></div>
   <div id="points-info">Shift + Click on the model to add a point.</div>
-  <div id="hint">Mouse wheel = zoom, drag = rotate/pan, drag marker = move point.</div>
+  <div id="hint">Mouse wheel = zoom, drag = rotate/pan, drag marker = move point. Cutting plane mode: W/M = move, E/R = rotate.</div>
 
   <div id="clip-panel">
     <div class="ctrl">
@@ -1008,15 +1008,32 @@ clipCheckbox.addEventListener("change", () => {
 });
 
 btnClipMove.addEventListener("click", () => {
-  transformControls.setMode("translate");
-  btnClipMove.classList.add("active");
-  btnClipRotate.classList.remove("active");
+  setClipGizmoMode("translate");
 });
 
 btnClipRotate.addEventListener("click", () => {
-  transformControls.setMode("rotate");
-  btnClipRotate.classList.add("active");
-  btnClipMove.classList.remove("active");
+  setClipGizmoMode("rotate");
+});
+
+function setClipGizmoMode(mode) {
+  if (!transformControls) return;
+  transformControls.setMode(mode);
+  const isMove = mode === "translate";
+  btnClipMove.classList.toggle("active", isMove);
+  btnClipRotate.classList.toggle("active", !isMove);
+}
+
+window.addEventListener("keydown", (event) => {
+  if (!clipEnabled || !transformControls || !transformControls.enabled) return;
+  const active = document.activeElement;
+  const tag = active && active.tagName ? active.tagName.toUpperCase() : "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || (active && active.isContentEditable)) return;
+  const key = (event.key || "").toLowerCase();
+  if (key === "w" || key === "m") {
+    setClipGizmoMode("translate");
+  } else if (key === "e" || key === "r") {
+    setClipGizmoMode("rotate");
+  }
 });
 
 btnClipFlip.addEventListener("click", () => {
