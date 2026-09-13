@@ -147,6 +147,9 @@
       </div>
     </div>
     <button id="btn-clip-flip" type="button" style="display:none;">Flip side</button>
+    <div class="ctrl" id="clip-both-halves-ctrl" style="display:none;">
+      <label><input type="checkbox" id="clip-both-halves" /> Show both halves</label>
+    </div>
     <div class="ctrl" id="clip-cross-section-ctrl" style="display:none;">
       <label><input type="checkbox" id="clip-cross-section" /> Show cross-section</label>
     </div>
@@ -195,6 +198,7 @@ let draggedMarkerIndex = -1;
 /* ---------- Cutting-plane state ---------- */
 let clipEnabled = false;
 let showCrossSection = false;
+let showBothClipHalves = false;
 let clipPlaneObj = null;      // Object3D: position/quaternion define the plane (local +Z = normal)
 let clipPlaneMesh = null;     // translucent visual quad
 let clipPlaneBorder = null;   // wireframe border of the quad
@@ -575,7 +579,7 @@ function applyClippingPlanes() {
     if (child.isMesh && child.material) {
       const mats = Array.isArray(child.material) ? child.material : [child.material];
       mats.forEach((m) => {
-        m.clippingPlanes = clipEnabled ? [threePlane] : [];
+        m.clippingPlanes = clipEnabled && !showBothClipHalves ? [threePlane] : [];
         m.needsUpdate = true;
       });
     }
@@ -591,9 +595,17 @@ function setClipEnabled(enabled) {
   transformControls.enabled = enabled;
   clipModeCtrl.style.display = enabled ? "flex" : "none";
   btnClipFlip.style.display = enabled ? "inline-block" : "none";
+  bothHalvesCtrl.style.display = enabled ? "flex" : "none";
   crossSectionCtrl.style.display = enabled ? "flex" : "none";
   btnClipExport.style.display = enabled ? "inline-block" : "none";
   if (!enabled) setShowCrossSection(false);
+  applyClippingPlanes();
+  updateClipInfo();
+}
+
+function setShowBothClipHalves(show) {
+  showBothClipHalves = show;
+  bothHalvesCheckbox.checked = show;
   applyClippingPlanes();
   updateClipInfo();
 }
@@ -882,6 +894,7 @@ function updateClipInfo() {
   const p = clipPlaneObj.position;
   const n = new THREE.Vector3(0, 0, 1).applyQuaternion(clipPlaneObj.quaternion).normalize();
   let txt = `Plane pos: (${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)}) · normal: (${n.x.toFixed(3)}, ${n.y.toFixed(3)}, ${n.z.toFixed(3)})`;
+  if (showBothClipHalves) txt += " · both halves visible";
   if (showCrossSection && lastCrossSectionResult) {
     const nPts = lastCrossSectionResult.loops.reduce((s, l) => s + l.points_3d.length, 0);
     txt += ` · cross-section: ${lastCrossSectionResult.loops.length} loop(s), ${nPts} pts`;
@@ -996,6 +1009,8 @@ const clipModeCtrl = document.getElementById("clip-mode-ctrl");
 const btnClipMove = document.getElementById("btn-clip-move");
 const btnClipRotate = document.getElementById("btn-clip-rotate");
 const btnClipFlip = document.getElementById("btn-clip-flip");
+const bothHalvesCtrl = document.getElementById("clip-both-halves-ctrl");
+const bothHalvesCheckbox = document.getElementById("clip-both-halves");
 const crossSectionCtrl = document.getElementById("clip-cross-section-ctrl");
 const crossSectionCheckbox = document.getElementById("clip-cross-section");
 const clip2DCtrl = document.getElementById("cross-section-overlay");
@@ -1024,6 +1039,11 @@ btnClipFlip.addEventListener("click", () => {
   updateClipPlaneFromObject();
   if (showCrossSection) recomputeCrossSection();
   updateClipInfo();
+  sendValue();
+});
+
+bothHalvesCheckbox.addEventListener("change", () => {
+  setShowBothClipHalves(bothHalvesCheckbox.checked);
   sendValue();
 });
 
@@ -1118,6 +1138,12 @@ function handleRender(args) {
 
   if (typeof args.enable_clipping === "boolean" && args.enable_clipping !== clipEnabled) {
     setClipEnabled(args.enable_clipping);
+  }
+  if (
+    typeof args.show_both_clip_halves === "boolean"
+    && args.show_both_clip_halves !== showBothClipHalves
+  ) {
+    setShowBothClipHalves(args.show_both_clip_halves);
   }
   if (args.clip_plane_position || args.clip_plane_normal) {
     const key = JSON.stringify([args.clip_plane_position || null, args.clip_plane_normal || null]);
