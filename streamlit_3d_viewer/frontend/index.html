@@ -69,6 +69,21 @@
     margin-bottom: 4px;
   }
   #cross-section-2d { display: block; background: #111318; border-radius: 4px; }
+  #cross-section-table {
+    width: 100%;
+    margin-top: 6px;
+    border-collapse: collapse;
+    color: #eeeeee;
+    font-size: 10px;
+  }
+  #cross-section-table th,
+  #cross-section-table td {
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    padding: 2px 4px;
+    text-align: left;
+  }
+  #cross-section-table td:last-child,
+  #cross-section-table th:last-child { text-align: right; }
 
   #mesh-info { color: var(--stv-muted-text); font-size: 11px; padding: 6px 4px 0 4px; }
   #points-info { color: var(--stv-muted-text); font-size: 12px; padding: 4px 4px 2px 4px; font-weight: 600; }
@@ -103,6 +118,14 @@
     <div id="cross-section-overlay" style="display:none;">
       <div id="cross-section-overlay-label">Cross-section</div>
       <canvas id="cross-section-2d" width="200" height="140"></canvas>
+      <table id="cross-section-table">
+        <thead>
+          <tr><th>Polygon</th><th>Area</th></tr>
+        </thead>
+        <tbody id="cross-section-table-body">
+          <tr><td colspan="2">No intersection</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -205,6 +228,8 @@ let lastCrossSectionResult = null; // last computed cross-section, ready to expo
 let clipPositionSetByPython = false;
 let clipNormalSetByPython = false;
 let lastPyClipKey = null;
+let lastPyClipEnabled = null;
+let lastPyShowCrossSection = null;
 let recomputeTimer = null;
 
 const wrap = document.getElementById("canvas-wrap");
@@ -836,6 +861,7 @@ function renderCrossSection2D(payload) {
     ctx.fillStyle = "rgba(255,255,255,0.45)";
     ctx.font = "11px sans-serif";
     ctx.fillText("No intersection", 10, h / 2);
+    renderCrossSectionTable(null);
     return;
   }
 
@@ -866,6 +892,37 @@ function renderCrossSection2D(payload) {
     if (l.closed) { ctx.closePath(); ctx.fill(); }
     ctx.stroke();
   });
+  renderCrossSectionTable(payload);
+}
+
+function polygonArea2D(points) {
+  if (!points || points.length < 3) return 0;
+  let twiceArea = 0;
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    twiceArea += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(twiceArea) * 0.5;
+}
+
+function renderCrossSectionTable(payload) {
+  const tbody = document.getElementById("cross-section-table-body");
+  if (!tbody) return;
+  if (!payload || payload.loops.length === 0) {
+    tbody.innerHTML = "<tr><td colspan=\"2\">No intersection</td></tr>";
+    return;
+  }
+  const closedLoops = payload.loops.filter((loop) => loop.closed);
+  if (closedLoops.length === 0) {
+    tbody.innerHTML = "<tr><td colspan=\"2\">No closed polygon</td></tr>";
+    return;
+  }
+  const rows = closedLoops.map((loop, i) => {
+    const area = polygonArea2D(loop.points_2d);
+    return `<tr><td>${i + 1}</td><td>${area.toFixed(4)}</td></tr>`;
+  }).join("");
+  tbody.innerHTML = rows;
 }
 
 function currentClipPlanePayload() {
@@ -1116,7 +1173,8 @@ function handleRender(args) {
     setMarkerScale(args.marker_size);
   }
 
-  if (typeof args.enable_clipping === "boolean" && args.enable_clipping !== clipEnabled) {
+  if (typeof args.enable_clipping === "boolean" && args.enable_clipping !== lastPyClipEnabled) {
+    lastPyClipEnabled = args.enable_clipping;
     setClipEnabled(args.enable_clipping);
   }
   if (args.clip_plane_position || args.clip_plane_normal) {
@@ -1126,7 +1184,8 @@ function handleRender(args) {
       setClipPlaneTransform(args.clip_plane_position, args.clip_plane_normal);
     }
   }
-  if (typeof args.show_cross_section === "boolean" && args.show_cross_section !== showCrossSection) {
+  if (typeof args.show_cross_section === "boolean" && args.show_cross_section !== lastPyShowCrossSection) {
+    lastPyShowCrossSection = args.show_cross_section;
     setShowCrossSection(args.show_cross_section);
   }
 
