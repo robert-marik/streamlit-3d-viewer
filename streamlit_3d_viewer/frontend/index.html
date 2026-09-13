@@ -253,8 +253,6 @@ let lastCrossSectionResult = null; // last computed cross-section, ready to expo
 let clipPositionSetByPython = false;
 let clipNormalSetByPython = false;
 let lastPyClipKey = null;
-let lastPyClipEnabled = null;
-let lastPyShowCrossSection = null;
 let recomputeTimer = null;
 
 const wrap = document.getElementById("canvas-wrap");
@@ -1218,8 +1216,7 @@ function handleRender(args) {
     setMarkerScale(args.marker_size);
   }
 
-  if (typeof args.enable_clipping === "boolean" && args.enable_clipping !== lastPyClipEnabled) {
-    lastPyClipEnabled = args.enable_clipping;
+  if (typeof args.enable_clipping === "boolean" && args.enable_clipping !== clipEnabled) {
     setClipEnabled(args.enable_clipping);
   }
   if (args.clip_plane_position || args.clip_plane_normal) {
@@ -1229,8 +1226,7 @@ function handleRender(args) {
       setClipPlaneTransform(args.clip_plane_position, args.clip_plane_normal);
     }
   }
-  if (typeof args.show_cross_section === "boolean" && args.show_cross_section !== lastPyShowCrossSection) {
-    lastPyShowCrossSection = args.show_cross_section;
+  if (typeof args.show_cross_section === "boolean" && args.show_cross_section !== showCrossSection) {
     setShowCrossSection(args.show_cross_section);
   }
 
