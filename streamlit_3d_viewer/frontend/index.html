@@ -248,6 +248,14 @@ let loadedModelKey = null; // identifies whichever model (glb, or obj+texture) i
 let points = []; // {point:[x,y,z], uv:[u,v]}
 let currentOpacity = 1.0;
 let markerScale = 1.0; // user-controlled relative marker size (1.0 = 100%)
+// Reference camera-to-model distance the marker's base radius was tuned
+// for (see fitCameraToObject). Markers are true 3D meshes, so without this
+// they'd shrink/grow with perspective as the camera moves closer/further —
+// each one would end up a different apparent size depending on how zoomed
+// in the view happened to be when it was placed. Re-scaling every frame
+// by (current distance / this reference) keeps their on-screen size
+// consistent no matter where the camera is.
+let markerRefDistance = 1;
 let raycaster = new THREE.Raycaster();
 let pointerDown = null;
 let markersGroup = new THREE.Group();
@@ -422,7 +430,18 @@ function onResize() {
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
+  updateMarkerDistanceScale();
   renderer.render(scene, camera);
+}
+
+/* Keep every marker's on-screen size the same regardless of how close or
+ * far the camera currently is — see the comment on `markerRefDistance`. */
+function updateMarkerDistanceScale() {
+  if (markersGroup.children.length === 0) return;
+  for (const m of markersGroup.children) {
+    const dist = camera.position.distanceTo(m.position);
+    m.scale.setScalar(markerScale * (dist / markerRefDistance));
+  }
 }
 
 /* ---------- Model loading ---------- */
@@ -513,6 +532,7 @@ function fitCameraToObject(obj) {
   const center = box.getCenter(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
   const dist = maxDim * 1.8;
+  markerRefDistance = dist;
 
   controls.target.copy(center);
   camera.position.copy(center).add(new THREE.Vector3(0, maxDim * 0.4, dist));
