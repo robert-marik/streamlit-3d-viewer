@@ -964,7 +964,10 @@ function renderCrossSectionTable(payload) {
     tbody.appendChild(tr);
   });
   if (statusEl) {
-    statusEl.textContent = `Cross-section has ${closedLoops.length} polygon(s): ${areas.map((a) => a.toFixed(4)).join(", ")}`;
+    const labeledAreas = areas
+      .map((a, i) => `polygon ${i + 1} area ${a.toFixed(4)} square units`)
+      .join(", ");
+    statusEl.textContent = `Cross-section has ${closedLoops.length} polygon(s): ${labeledAreas}`;
   }
 }
 
