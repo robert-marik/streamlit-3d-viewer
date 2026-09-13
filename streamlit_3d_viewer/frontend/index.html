@@ -92,6 +92,11 @@
   }
   #cross-section-table td:last-child,
   #cross-section-table th:last-child { text-align: right; }
+  #cross-section-table-empty {
+    margin-top: 6px;
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 10px;
+  }
   .sr-only {
     position: absolute;
     width: 1px;
@@ -142,10 +147,9 @@
         <thead>
           <tr><th scope="col">Polygon</th><th scope="col">Area</th></tr>
         </thead>
-        <tbody id="cross-section-table-body">
-          <tr><td colspan="2">No intersection</td></tr>
-        </tbody>
+        <tbody id="cross-section-table-body"></tbody>
       </table>
+      <div id="cross-section-table-empty">No intersection</div>
       <div id="cross-section-status" class="sr-only" aria-live="polite" aria-atomic="true">No intersection</div>
     </div>
   </div>
@@ -929,31 +933,25 @@ function polygonArea2D(points) {
 
 function renderCrossSectionTable(payload) {
   const tbody = document.getElementById("cross-section-table-body");
+  const tableEl = document.getElementById("cross-section-table");
+  const emptyEl = document.getElementById("cross-section-table-empty");
   const statusEl = document.getElementById("cross-section-status");
   if (!tbody) return;
   tbody.replaceChildren();
   const loops = Array.isArray(payload?.loops) ? payload.loops : [];
-  if (loops.length === 0) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 2;
-    td.textContent = "No intersection";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    if (statusEl) statusEl.textContent = "No intersection";
+  if (loops.length === 0 || loops.every((loop) => !loop.closed)) {
+    const msg = loops.length === 0 ? "No intersection" : "No closed polygon";
+    if (tableEl) tableEl.style.display = "none";
+    if (emptyEl) {
+      emptyEl.style.display = "block";
+      emptyEl.textContent = msg;
+    }
+    if (statusEl) statusEl.textContent = msg;
     return;
   }
+  if (tableEl) tableEl.style.display = "table";
+  if (emptyEl) emptyEl.style.display = "none";
   const closedLoops = loops.filter((loop) => loop.closed);
-  if (closedLoops.length === 0) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 2;
-    td.textContent = "No closed polygon";
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-    if (statusEl) statusEl.textContent = "No closed polygon";
-    return;
-  }
   const areas = [];
   closedLoops.forEach((loop, i) => {
     const tr = document.createElement("tr");
