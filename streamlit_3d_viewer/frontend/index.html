@@ -1028,10 +1028,10 @@ btnClipRotate.addEventListener("click", () => {
 
 function setClipGizmoMode(mode) {
   if (!transformControls) return;
+  if (mode !== "translate" && mode !== "rotate") return;
   transformControls.setMode(mode);
-  const isMove = mode === "translate";
-  btnClipMove.classList.toggle("active", isMove);
-  btnClipRotate.classList.toggle("active", !isMove);
+  btnClipMove.classList.toggle("active", mode === "translate");
+  btnClipRotate.classList.toggle("active", mode === "rotate");
 }
 
 wrap.addEventListener("keydown", (event) => {
