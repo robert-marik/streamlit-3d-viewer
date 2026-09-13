@@ -985,6 +985,8 @@ function renderCrossSectionTable(payload) {
   if (emptyEl) emptyEl.style.display = "none";
   const closedLoops = loops.filter((loop) => loop.closed);
   const areas = [];
+  const areaSummaries = [];
+  let unavailableCount = 0;
   closedLoops.forEach((loop, i) => {
     const tr = document.createElement("tr");
     const polygonCell = document.createElement("td");
@@ -1002,8 +1004,11 @@ function renderCrossSectionTable(payload) {
     if (typeof area === "number" && Number.isFinite(area)) {
       areas.push(area);
       areaCell.textContent = area.toFixed(4);
+      areaSummaries.push(`polygon ${i + 1}: ${area.toFixed(4)}`);
     } else {
       areaCell.textContent = "N/A";
+      areaSummaries.push(`polygon ${i + 1}: unavailable`);
+      unavailableCount += 1;
     }
     tr.appendChild(polygonCell);
     tr.appendChild(areaCell);
@@ -1012,17 +1017,17 @@ function renderCrossSectionTable(payload) {
   if (statusEl) {
     const totalArea = areas.reduce((sum, a) => sum + a, 0);
     const maxListed = 5;
-    const listed = areas
-      .slice(0, maxListed)
-      .map((a, i) => `polygon ${i + 1}: ${a.toFixed(4)}`)
-      .join("; ");
-    const more = areas.length > maxListed ? `; and ${areas.length - maxListed} more` : "";
+    const listed = areaSummaries.slice(0, maxListed).join("; ");
+    const more = areaSummaries.length > maxListed ? `; and ${areaSummaries.length - maxListed} more` : "";
     const areaSummary = areas.length > 0
       ? `total area ${totalArea.toFixed(4)} square units`
       : "areas unavailable";
+    const availabilitySummary = unavailableCount > 0
+      ? ` (${unavailableCount} polygon area value(s) unavailable)`
+      : "";
     announceCrossSectionStatus(
       statusEl,
-      `Cross-section has ${closedLoops.length} polygon(s), ${areaSummary}. ` +
+      `Cross-section has ${closedLoops.length} polygon(s), ${areaSummary}${availabilitySummary}. ` +
       `Areas: ${listed || "none"}${more}.`
     );
   }
