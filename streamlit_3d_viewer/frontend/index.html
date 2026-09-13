@@ -1047,8 +1047,10 @@ window.addEventListener("keydown", (event) => {
   if (tag === "INPUT" || tag === "TEXTAREA" || (active && active.isContentEditable)) return;
   const key = (event.key || "").toLowerCase();
   if (key === "w" || key === "m") {
+    event.preventDefault();
     setClipGizmoMode("translate");
   } else if (key === "e" || key === "r") {
+    event.preventDefault();
     setClipGizmoMode("rotate");
   }
 });
