@@ -98,7 +98,8 @@
 </head>
 <body>
 <div id="app">
-  <div id="canvas-wrap" role="region" aria-label="3D viewer canvas" aria-describedby="hint">
+  <div id="canvas-wrap" role="region" aria-label="3D viewer canvas" aria-describedby="viewer-shortcuts-desc" tabindex="0">
+    <div id="viewer-shortcuts-desc" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;">Cutting plane shortcuts: W or M for move mode, E or R for rotate mode.</div>
     <div id="marker-tooltip"></div>
     <div id="cross-section-overlay" style="display:none;">
       <div id="cross-section-overlay-label">Cross-section</div>
@@ -1029,7 +1030,8 @@ function setClipGizmoMode(mode) {
 
 window.addEventListener("keydown", (event) => {
   if (!clipEnabled || !transformControls || !transformControls.enabled) return;
-  if (!pointerInsideViewer) return;
+  const viewerHasKeyboardFocus = document.activeElement === wrap || wrap.contains(document.activeElement);
+  if (!pointerInsideViewer && !viewerHasKeyboardFocus) return;
   if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
   const active = document.activeElement;
   const tag = active && active.tagName ? active.tagName.toUpperCase() : "";
