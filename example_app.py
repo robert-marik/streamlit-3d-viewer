@@ -59,6 +59,36 @@ with st.sidebar:
     # its own opacity slider right next to the scan; keeping a second one
     # here would just be a duplicate control that goes out of sync.
 
+    st.header("3. Cutting plane")
+    enable_clipping = st.checkbox("Enable cutting plane", value=False)
+    clip_plane_position = None
+    clip_plane_normal = None
+    show_cross_section = False
+    if enable_clipping:
+        st.caption(
+            "Starting position/tilt for the plane. Drag the gizmo in the "
+            "viewer to fine-tune it; moving a slider here snaps the plane "
+            "back to that exact value."
+        )
+        # -2..2 is a generic default; adjust to your model's actual scale.
+        px = st.slider("Position X", -2.0, 2.0, 0.0, 0.01)
+        py = st.slider("Position Y", -2.0, 2.0, 0.0, 0.01)
+        pz = st.slider("Position Z", -2.0, 2.0, 0.0, 0.01)
+        clip_plane_position = [px, py, pz]
+
+        tilt = st.slider("Tilt from horizontal (°)", 0, 180, 0)
+        rotate = st.slider("Rotation around vertical axis (°)", 0, 360, 0)
+        import math
+        t, r = math.radians(tilt), math.radians(rotate)
+        # tilt=0 -> horizontal plane, normal points straight up (+Y)
+        clip_plane_normal = [
+            math.sin(t) * math.cos(r),
+            math.cos(t),
+            math.sin(t) * math.sin(r),
+        ]
+
+        show_cross_section = st.checkbox("Show cross-section", value=False)
+
 report = st.session_state.report
 
 if report is not None:
@@ -90,12 +120,19 @@ if report is not None:
         if not report.decimation_applied:
             st.caption("No mesh decimation was applied (target_faces not set or mesh already smaller).")
 
-    points = show_3d_viewer(
+    result = show_3d_viewer(
         report.output_path,
         background_color=bg_color,
         height=680,
+        enable_clipping=enable_clipping,
+        clip_plane_position=clip_plane_position,
+        clip_plane_normal=clip_plane_normal,
+        show_cross_section=show_cross_section,
         key="viewer",
     )
+    points = result["points"]
+    clip_plane = result["clip_plane"]
+    cross_section = result["cross_section"]
 
     st.subheader("Selected points")
     if points:
@@ -114,5 +151,55 @@ if report is not None:
         st.dataframe(df, width="stretch")
     else:
         st.caption("No points selected yet.")
+
+    if clip_plane is not None:
+        st.subheader("Cutting plane")
+        st.caption(
+            f"Position: {[round(v, 4) for v in clip_plane['position']]} · "
+            f"Normal: {[round(v, 4) for v in clip_plane['normal']]}"
+        )
+
+        if cross_section is not None:
+            n_loops = len(cross_section["loops"])
+            n_pts = sum(len(l["points_3d"]) for l in cross_section["loops"])
+            st.caption(f"Cross-section: {n_loops} loop(s), {n_pts} point(s) total.")
+
+            if cross_section["loops"] and st.button("Render cross-section in detail (matplotlib)"):
+                import matplotlib.pyplot as plt
+
+                fig, ax = plt.subplots(figsize=(6, 6))
+                for i, loop in enumerate(cross_section["loops"]):
+                    pts = loop["points_2d"]
+                    if loop["closed"]:
+                        pts = pts + [pts[0]]
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    ax.plot(xs, ys, marker="o", markersize=2, label=f"Loop {i + 1}")
+                    if loop["closed"]:
+                        ax.fill(xs, ys, alpha=0.2)
+                ax.set_aspect("equal")
+                ax.set_xlabel("u")
+                ax.set_ylabel("v")
+                ax.set_title("Cross-section polygon(s)")
+                ax.legend()
+                st.pyplot(fig)
+
+            for i, loop in enumerate(cross_section["loops"]):
+                loop_df = pd.DataFrame(
+                    loop["points_3d"], columns=["x", "y", "z"]
+                )
+                loop_df[["u", "v"]] = pd.DataFrame(loop["points_2d"])
+                with st.expander(
+                    f"Loop {i + 1} ({'closed' if loop['closed'] else 'open'}, "
+                    f"{len(loop['points_3d'])} points)"
+                ):
+                    st.dataframe(loop_df, width="stretch")
+                    st.download_button(
+                        f"Download loop {i + 1} as CSV",
+                        loop_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"cross_section_loop_{i + 1}.csv",
+                        mime="text/csv",
+                        key=f"dl_loop_{i}",
+                    )
 else:
     st.info("Upload an OBJ (and optionally a texture) in the sidebar, then click \"Convert to GLB\".")

@@ -39,6 +39,9 @@ def _file_to_data_url(path, mime):
     return f"data:{mime};base64,{b64}"
 
 
+_EMPTY_VALUE = {"points": [], "clip_plane": None, "cross_section": None}
+
+
 def show_3d_viewer(
     model_path=None,
     obj_path=None,
@@ -47,6 +50,10 @@ def show_3d_viewer(
     background_color="#1e1e1e",
     opacity=1.0,
     marker_size=1.0,
+    enable_clipping=False,
+    clip_plane_position=None,
+    clip_plane_normal=None,
+    show_cross_section=False,
     key=None,
 ):
     """
@@ -89,20 +96,63 @@ def show_3d_viewer(
         has its own "Point size" slider, which is the single source of
         truth once rendered and also lets the user resize markers
         already placed.
+    enable_clipping : bool
+        Show the cutting-plane widget (a draggable/rotatable gizmo) and
+        clip the model against it. Can also be turned on/off with the
+        "Cutting plane" checkbox in the component itself.
+    clip_plane_position : list[float] | tuple[float, float, float] | None
+        `[x, y, z]` position to (re)apply to the cutting plane. This is
+        read once per distinct value: the first time it's given it sets
+        the plane's starting position (defaulting to the model's center
+        otherwise); if you pass a *new* value on a later rerun (e.g. the
+        user moved a Streamlit slider bound to this), the plane snaps to
+        it, overriding whatever the mouse had set. As long as the value
+        you pass doesn't change, dragging the on-screen gizmo is left
+        alone.
+    clip_plane_normal : list[float] | tuple[float, float, float] | None
+        `[nx, ny, nz]` direction the plane faces (does not need to be
+        unit length; it's normalized internally). Defaults to `[0, 1, 0]`
+        (horizontal, like a water level) when not given.
+        Follows the same "re-applied only when the value changes"
+        convention as `clip_plane_position`.
+    show_cross_section : bool
+        Compute and draw the polygon(s) where the cutting plane
+        intersects the model, and include them in the returned value.
+        Can also be toggled with the "Show cross-section" checkbox.
     key : str | None
         Streamlit component key.
 
     Returns
     -------
-    list[dict]
-        Points the user clicked on the model, e.g.:
-        [{"point": [x, y, z], "uv": [u, v]}, ...]
+    dict
+        ``{"points": [...], "clip_plane": {...} | None, "cross_section": {...} | None}``
+
+        - ``points``: list of clicked points, e.g.
+          ``[{"point": [x, y, z], "uv": [u, v]}, ...]``.
+        - ``clip_plane``: ``None`` if clipping is off, otherwise
+          ``{"position": [x, y, z], "normal": [nx, ny, nz]}`` with the
+          gizmo's current (possibly mouse-dragged) transform.
+        - ``cross_section``: ``None`` unless "Show cross-section" is on,
+          otherwise
+          ``{"plane_basis": {...}, "loops": [{"closed": bool,
+          "points_3d": [[x, y, z], ...], "points_2d": [[u, v], ...]}, ...]}``.
+          ``points_2d`` are the same points flattened into the plane's own
+          in-plane (u, v) axes (see ``plane_basis``), handy for exporting
+          a flat cut profile.
     """
     kwargs = dict(
         opacity=float(opacity),
         marker_size=float(marker_size),
         background_color=background_color,
-        default=[],
+        enable_clipping=bool(enable_clipping),
+        clip_plane_position=(
+            [float(v) for v in clip_plane_position] if clip_plane_position is not None else None
+        ),
+        clip_plane_normal=(
+            [float(v) for v in clip_plane_normal] if clip_plane_normal is not None else None
+        ),
+        show_cross_section=bool(show_cross_section),
+        default=_EMPTY_VALUE,
         key=key,
     )
 
@@ -141,4 +191,4 @@ def show_3d_viewer(
             **kwargs,
         )
 
-    return value or []
+    return value or _EMPTY_VALUE

@@ -41,6 +41,35 @@
   }
   button:hover { background: #dfe2fb; }
 
+  #clip-panel {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+    padding: 10px 10px 8px 10px; margin-top: 8px;
+    color: var(--stv-text);
+    background: var(--stv-panel-bg);
+    border: 1px solid var(--stv-border);
+    border-radius: 8px;
+  }
+  .btn-row { display: flex; gap: 4px; }
+  .toggle-btn.active { background: #4a7fe0; color: #fff; }
+  #clip-info { color: var(--stv-muted-text); font-size: 11px; padding: 0 4px; width: 100%; }
+  #cross-section-overlay {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(17, 19, 24, 0.85);
+    border: 1px solid var(--stv-border);
+    border-radius: 6px;
+    padding: 6px;
+    pointer-events: none; /* stay out of the way of orbit/drag on the model */
+  }
+  #cross-section-overlay-label {
+    color: #eeeeee;
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  #cross-section-2d { display: block; background: #111318; border-radius: 4px; }
+
   #mesh-info { color: var(--stv-muted-text); font-size: 11px; padding: 6px 4px 0 4px; }
   #points-info { color: var(--stv-muted-text); font-size: 12px; padding: 4px 4px 2px 4px; font-weight: 600; }
   #hint { color: var(--stv-muted-text); font-size: 11px; padding: 0 4px 10px 4px; }
@@ -71,6 +100,10 @@
 <div id="app">
   <div id="canvas-wrap">
     <div id="marker-tooltip"></div>
+    <div id="cross-section-overlay" style="display:none;">
+      <div id="cross-section-overlay-label">Cross-section</div>
+      <canvas id="cross-section-2d" width="200" height="140"></canvas>
+    </div>
   </div>
 
   <div id="panel">
@@ -101,6 +134,25 @@
   <div id="mesh-info"></div>
   <div id="points-info">Shift + Click on the model to add a point.</div>
   <div id="hint">Mouse wheel = zoom, drag = rotate/pan, drag marker = move point.</div>
+
+  <div id="clip-panel">
+    <div class="ctrl">
+      <label><input type="checkbox" id="clip-enable" /> Cutting plane</label>
+    </div>
+    <div class="ctrl" id="clip-mode-ctrl" style="display:none;">
+      <label>Gizmo mode</label>
+      <div class="btn-row">
+        <button id="btn-clip-move" class="toggle-btn active" type="button">Move</button>
+        <button id="btn-clip-rotate" class="toggle-btn" type="button">Rotate</button>
+      </div>
+    </div>
+    <button id="btn-clip-flip" type="button" style="display:none;">Flip side</button>
+    <div class="ctrl" id="clip-cross-section-ctrl" style="display:none;">
+      <label><input type="checkbox" id="clip-cross-section" /> Show cross-section</label>
+    </div>
+    <button id="btn-clip-export" type="button" style="display:none;">Export cut polygon</button>
+    <div id="clip-info"></div>
+  </div>
 </div>
 
 <script type="importmap">
@@ -118,6 +170,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 
 /* ---------- Streamlit bridge ---------- */
 function stSend(type, data) {
@@ -138,6 +191,21 @@ let pointerDown = null;
 let markersGroup = new THREE.Group();
 
 let draggedMarkerIndex = -1;
+
+/* ---------- Cutting-plane state ---------- */
+let clipEnabled = false;
+let showCrossSection = false;
+let clipPlaneObj = null;      // Object3D: position/quaternion define the plane (local +Z = normal)
+let clipPlaneMesh = null;     // translucent visual quad
+let clipPlaneBorder = null;   // wireframe border of the quad
+let transformControls = null; // three.js gizmo (translate/rotate) attached to clipPlaneObj
+let threePlane = new THREE.Plane(); // world-space plane, kept in sync with clipPlaneObj, used for clipping
+let crossSectionGroup = new THREE.Group(); // rendered cut outline(s) + fill
+let lastCrossSectionResult = null; // last computed cross-section, ready to export
+let clipPositionSetByPython = false;
+let clipNormalSetByPython = false;
+let lastPyClipKey = null;
+let recomputeTimer = null;
 
 const wrap = document.getElementById("canvas-wrap");
 const markerTooltip = document.getElementById("marker-tooltip");
@@ -175,6 +243,7 @@ function initScene() {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.3;
+  renderer.localClippingEnabled = true;
   wrap.appendChild(renderer.domElement);
 
   scene.add(new THREE.AmbientLight(0xffffff, 1.2));
@@ -195,6 +264,8 @@ function initScene() {
   root = new THREE.Group();
   scene.add(root);
   scene.add(markersGroup);
+
+  initClipping();
 
   animate();
   window.addEventListener("resize", onResize);
@@ -251,7 +322,7 @@ function initScene() {
     if (draggedMarkerIndex !== -1) {
       draggedMarkerIndex = -1;
       controls.enabled = true; // Znovu zapne rotaci kamery
-      stSetValue(points); // Odeslání aktualizovaných bodů do Streamlitu
+      sendValue(); // Odeslání aktualizovaných bodů (a stavu roviny/řezu) do Streamlitu
     } else if (pointerDown) {
       const dist = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
       // Bod se přidá pouze v případě, že je stisknut Shift
@@ -294,6 +365,7 @@ function onModelLoaded(object, sizeKb, formatLabel) {
   fitCameraToObject(currentObject);
   clearPoints();
   reportMeshInfo(currentObject, sizeKb, formatLabel);
+  initClipPlaneForModel();
 }
 
 function loadModel(url, sizeKb) {
@@ -390,6 +462,442 @@ function applyOpacity(value) {
   });
 }
 
+/* ---------- Cutting plane: setup ---------- */
+function initClipping() {
+  clipPlaneObj = new THREE.Object3D();
+  // Default orientation: horizontal (normal pointing "up", world +Y), like
+  // a water level or a table top — until Python or the user says otherwise.
+  clipPlaneObj.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0)
+  );
+  scene.add(clipPlaneObj);
+
+  const planeGeom = new THREE.PlaneGeometry(1, 1);
+  const planeMat = new THREE.MeshBasicMaterial({
+    color: 0xffcc00, transparent: true, opacity: 0.22,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  clipPlaneMesh = new THREE.Mesh(planeGeom, planeMat);
+  clipPlaneMesh.visible = false;
+  clipPlaneObj.add(clipPlaneMesh);
+
+  clipPlaneBorder = new THREE.LineSegments(
+    new THREE.EdgesGeometry(planeGeom),
+    new THREE.LineBasicMaterial({ color: 0xffcc00 })
+  );
+  clipPlaneBorder.visible = false;
+  clipPlaneObj.add(clipPlaneBorder);
+
+  transformControls = new TransformControls(camera, renderer.domElement);
+  transformControls.setMode("translate");
+  transformControls.setSize(0.9);
+  transformControls.attach(clipPlaneObj);
+  transformControls.visible = false;
+  transformControls.enabled = false;
+  scene.add(transformControls);
+
+  transformControls.addEventListener("dragging-changed", (e) => {
+    controls.enabled = !e.value; // don't fight OrbitControls while dragging the gizmo
+    if (!e.value) {
+      updateClipPlaneFromObject();
+      if (showCrossSection) recomputeCrossSection();
+      updateClipInfo();
+      sendValue();
+    }
+  });
+  transformControls.addEventListener("objectChange", () => {
+    updateClipPlaneFromObject();
+    updateClipInfo();
+    if (showCrossSection) scheduleRecomputeCrossSection();
+  });
+
+  scene.add(crossSectionGroup);
+  updateClipPlaneFromObject();
+}
+
+/* Recompute the world-space THREE.Plane from clipPlaneObj's current transform.
+ * Local +Z of clipPlaneObj is the plane normal. */
+function updateClipPlaneFromObject() {
+  if (!clipPlaneObj) return;
+  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(clipPlaneObj.quaternion).normalize();
+  threePlane.setFromNormalAndCoplanarPoint(normal, clipPlaneObj.position);
+}
+
+/* Turn a [x,y,z] position and/or [nx,ny,nz] normal coming from Python into
+ * the gizmo's transform. Either can be omitted to leave that part alone. */
+function setClipPlaneTransform(position, normalArr) {
+  if (!clipPlaneObj) return;
+  if (Array.isArray(position) && position.length === 3) {
+    clipPlaneObj.position.set(position[0], position[1], position[2]);
+    clipPositionSetByPython = true;
+  }
+  if (Array.isArray(normalArr) && normalArr.length === 3) {
+    const n = new THREE.Vector3(normalArr[0], normalArr[1], normalArr[2]);
+    if (n.lengthSq() > 1e-9) {
+      n.normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+      clipPlaneObj.quaternion.copy(q);
+      clipNormalSetByPython = true;
+    }
+  }
+  updateClipPlaneFromObject();
+  if (showCrossSection) recomputeCrossSection();
+  updateClipInfo();
+}
+
+/* Size/center the plane widget to the freshly loaded model, unless Python
+ * already pinned its position explicitly. */
+function initClipPlaneForModel() {
+  if (!currentObject || !clipPlaneObj) return;
+  const box = new THREE.Box3().setFromObject(currentObject);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const quadSize = maxDim * 1.6;
+
+  clipPlaneMesh.geometry.dispose();
+  clipPlaneMesh.geometry = new THREE.PlaneGeometry(quadSize, quadSize);
+  clipPlaneBorder.geometry.dispose();
+  clipPlaneBorder.geometry = new THREE.EdgesGeometry(clipPlaneMesh.geometry);
+
+  if (!clipPositionSetByPython) {
+    clipPlaneObj.position.copy(center);
+  }
+  updateClipPlaneFromObject();
+  applyClippingPlanes();
+  if (showCrossSection) recomputeCrossSection();
+  updateClipInfo();
+}
+
+function applyClippingPlanes() {
+  if (!currentObject) return;
+  currentObject.traverse((child) => {
+    if (child.isMesh && child.material) {
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      mats.forEach((m) => {
+        m.clippingPlanes = clipEnabled ? [threePlane] : [];
+        m.needsUpdate = true;
+      });
+    }
+  });
+}
+
+function setClipEnabled(enabled) {
+  clipEnabled = enabled;
+  clipCheckbox.checked = enabled;
+  clipPlaneMesh.visible = enabled;
+  clipPlaneBorder.visible = enabled;
+  transformControls.visible = enabled;
+  transformControls.enabled = enabled;
+  clipModeCtrl.style.display = enabled ? "flex" : "none";
+  btnClipFlip.style.display = enabled ? "inline-block" : "none";
+  crossSectionCtrl.style.display = enabled ? "flex" : "none";
+  btnClipExport.style.display = enabled ? "inline-block" : "none";
+  if (!enabled) setShowCrossSection(false);
+  applyClippingPlanes();
+  updateClipInfo();
+}
+
+function setShowCrossSection(show) {
+  showCrossSection = show;
+  crossSectionCheckbox.checked = show;
+  crossSectionGroup.visible = show;
+  clip2DCtrl.style.display = show ? "block" : "none";
+  if (show) {
+    recomputeCrossSection();
+  } else {
+    crossSectionGroup.clear();
+    lastCrossSectionResult = null;
+    renderCrossSection2D(null);
+  }
+  updateClipInfo();
+}
+
+/* ---------- Cutting plane: mesh/plane intersection ---------- */
+
+/* Two orthonormal in-plane axes + the origin, used to flatten the cut to 2D. */
+function planeBasis(plane) {
+  const normal = plane.normal.clone().normalize();
+  let ref = Math.abs(normal.dot(new THREE.Vector3(1, 0, 0))) > 0.9
+    ? new THREE.Vector3(0, 1, 0)
+    : new THREE.Vector3(1, 0, 0);
+  const u = ref.clone().sub(normal.clone().multiplyScalar(ref.dot(normal))).normalize();
+  const v = new THREE.Vector3().crossVectors(normal, u).normalize();
+  const origin = plane.coplanarPoint(new THREE.Vector3());
+  return { origin, normal, u, v };
+}
+
+function to2D(point, basis) {
+  const rel = point.clone().sub(basis.origin);
+  return new THREE.Vector2(rel.dot(basis.u), rel.dot(basis.v));
+}
+
+/* Where a single triangle crosses the plane: 0 or 2 intersection points
+ * (a segment), or null if the triangle doesn't straddle the plane. */
+function trianglePlaneSegment(vA, vB, vC, dA, dB, dC) {
+  const EPS = 1e-8;
+  const pts = [];
+  function edge(v1, d1, v2, d2) {
+    if ((d1 > EPS && d2 < -EPS) || (d1 < -EPS && d2 > EPS)) {
+      const t = d1 / (d1 - d2);
+      pts.push(new THREE.Vector3().lerpVectors(v1, v2, t));
+    } else if (Math.abs(d1) <= EPS) {
+      pts.push(v1.clone());
+    }
+  }
+  edge(vA, dA, vB, dB);
+  edge(vB, dB, vC, dC);
+  edge(vC, dC, vA, dA);
+
+  const unique = [];
+  for (const p of pts) {
+    if (!unique.some((q) => q.distanceToSquared(p) < 1e-12)) unique.push(p);
+  }
+  return unique.length === 2 ? unique : null;
+}
+
+/* Slice every triangle of `object` against `plane` (both in world space) and
+ * chain the resulting segments into polylines/loops. */
+function computeCrossSection(object, plane) {
+  const segments = [];
+  const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+
+  object.updateMatrixWorld(true);
+  object.traverse((child) => {
+    if (!child.isMesh || !child.geometry) return;
+    const geo = child.geometry;
+    const pos = geo.attributes.position;
+    if (!pos) return;
+    const index = geo.index;
+    const triCount = index ? index.count / 3 : pos.count / 3;
+    const m = child.matrixWorld;
+
+    const getVertex = (i, target) => {
+      const idx = index ? index.getX(i) : i;
+      target.fromBufferAttribute(pos, idx).applyMatrix4(m);
+      return target;
+    };
+
+    for (let t = 0; t < triCount; t++) {
+      getVertex(t * 3 + 0, vA);
+      getVertex(t * 3 + 1, vB);
+      getVertex(t * 3 + 2, vC);
+      const dA = plane.distanceToPoint(vA);
+      const dB = plane.distanceToPoint(vB);
+      const dC = plane.distanceToPoint(vC);
+      const seg = trianglePlaneSegment(vA, vB, vC, dA, dB, dC);
+      if (seg) segments.push(seg);
+    }
+  });
+
+  return stitchSegmentsToLoops(segments);
+}
+
+/* Weld segment endpoints within `tolerance` and trace them into polylines.
+ * Loops that close back on their start vertex are marked accordingly. */
+function stitchSegmentsToLoops(segments, tolerance = 1e-5) {
+  const verts = [];
+  const tol2 = tolerance * tolerance;
+  function weld(p) {
+    for (let i = 0; i < verts.length; i++) {
+      if (verts[i].distanceToSquared(p) < tol2) return i;
+    }
+    verts.push(p.clone());
+    return verts.length - 1;
+  }
+
+  const edges = [];
+  for (const [a, b] of segments) {
+    const ia = weld(a), ib = weld(b);
+    if (ia !== ib) edges.push([ia, ib]);
+  }
+
+  const adj = new Map();
+  edges.forEach(([i, j], idx) => {
+    if (!adj.has(i)) adj.set(i, []);
+    if (!adj.has(j)) adj.set(j, []);
+    adj.get(i).push({ to: j, idx });
+    adj.get(j).push({ to: i, idx });
+  });
+
+  const used = new Set();
+  const loops = [];
+  edges.forEach((e, idx) => {
+    if (used.has(idx)) return;
+    used.add(idx);
+    const chain = [e[0], e[1]];
+    let current = e[1];
+    let safety = 0;
+    while (safety++ < edges.length + 5) {
+      const neighbors = adj.get(current) || [];
+      const next = neighbors.find((n) => !used.has(n.idx));
+      if (!next) break;
+      used.add(next.idx);
+      current = next.to;
+      chain.push(current);
+      if (current === chain[0]) break;
+    }
+    loops.push(chain.map((vi) => verts[vi]));
+  });
+  return loops;
+}
+
+function recomputeCrossSection() {
+  if (!currentObject) return;
+  updateClipPlaneFromObject();
+  const loops = computeCrossSection(currentObject, threePlane);
+  renderCrossSection(loops);
+  lastCrossSectionResult = buildCrossSectionPayload(loops);
+  renderCrossSection2D(lastCrossSectionResult);
+  updateClipInfo();
+}
+
+function scheduleRecomputeCrossSection() {
+  if (recomputeTimer) return;
+  recomputeTimer = setTimeout(() => {
+    recomputeTimer = null;
+    recomputeCrossSection();
+  }, 120);
+}
+
+function renderCrossSection(loops) {
+  crossSectionGroup.clear();
+  const basis = planeBasis(threePlane);
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x33ff66, depthTest: false });
+  const fillMat = new THREE.MeshBasicMaterial({
+    color: 0x33ff66, transparent: true, opacity: 0.35,
+    side: THREE.DoubleSide, depthTest: false,
+  });
+
+  loops.forEach((loopPts) => {
+    if (loopPts.length < 2) return;
+    const closed = loopPts.length > 2 &&
+      loopPts[0].distanceToSquared(loopPts[loopPts.length - 1]) < 1e-8;
+    const drawPts = closed ? loopPts.slice(0, -1) : loopPts;
+
+    const lineGeom = new THREE.BufferGeometry().setFromPoints(drawPts);
+    const line = closed ? new THREE.LineLoop(lineGeom, lineMat) : new THREE.Line(lineGeom, lineMat);
+    line.renderOrder = 1000;
+    crossSectionGroup.add(line);
+
+    if (closed && drawPts.length >= 3) {
+      const pts2d = drawPts.map((p) => to2D(p, basis));
+      try {
+        const shape = new THREE.Shape(pts2d);
+        const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), fillMat);
+        mesh.setRotationFromMatrix(new THREE.Matrix4().makeBasis(basis.u, basis.v, basis.normal));
+        mesh.position.copy(basis.origin);
+        mesh.renderOrder = 999;
+        crossSectionGroup.add(mesh);
+      } catch (err) {
+        // Self-intersecting or degenerate outline: skip the fill, keep the outline.
+      }
+    }
+  });
+}
+
+/* Build the JSON payload sent to Python: 3D points plus a flattened 2D
+ * version (in the plane's own u/v axes) for each closed/open loop found. */
+function buildCrossSectionPayload(loops) {
+  const basis = planeBasis(threePlane);
+  const loopsOut = loops
+    .filter((l) => l.length >= 3)
+    .map((loopPts) => {
+      const closed = loopPts.length > 2 &&
+        loopPts[0].distanceToSquared(loopPts[loopPts.length - 1]) < 1e-8;
+      const pts = closed ? loopPts.slice(0, -1) : loopPts;
+      return {
+        closed,
+        points_3d: pts.map((p) => [p.x, p.y, p.z]),
+        points_2d: pts.map((p) => { const uv = to2D(p, basis); return [uv.x, uv.y]; }),
+      };
+    });
+  return {
+    plane_basis: {
+      origin: [basis.origin.x, basis.origin.y, basis.origin.z],
+      normal: [basis.normal.x, basis.normal.y, basis.normal.z],
+      u_axis: [basis.u.x, basis.u.y, basis.u.z],
+      v_axis: [basis.v.x, basis.v.y, basis.v.z],
+    },
+    loops: loopsOut,
+  };
+}
+
+/* Live 2D preview of the cut, drawn in the plane's own (u, v) axes so it
+ * updates in real time while the gizmo is being dragged. */
+function renderCrossSection2D(payload) {
+  const canvas = document.getElementById("cross-section-2d");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (!payload || payload.loops.length === 0) {
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.font = "11px sans-serif";
+    ctx.fillText("No intersection", 10, h / 2);
+    return;
+  }
+
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  payload.loops.forEach((l) => l.points_2d.forEach(([u, v]) => {
+    if (u < minU) minU = u; if (u > maxU) maxU = u;
+    if (v < minV) minV = v; if (v > maxV) maxV = v;
+  }));
+  const spanU = Math.max(maxU - minU, 1e-6);
+  const spanV = Math.max(maxV - minV, 1e-6);
+  const pad = 14;
+  const scale = Math.min((w - 2 * pad) / spanU, (h - 2 * pad) / spanV);
+  const midU = (minU + maxU) / 2, midV = (minV + maxV) / 2;
+  const toCanvas = ([u, v]) => [
+    w / 2 + (u - midU) * scale,
+    h / 2 - (v - midV) * scale, // flip v: screen Y grows downward
+  ];
+
+  ctx.strokeStyle = "#33ff66";
+  ctx.fillStyle = "rgba(51, 255, 102, 0.25)";
+  ctx.lineWidth = 1.5;
+  payload.loops.forEach((l) => {
+    const pts = l.points_2d.map(toCanvas);
+    if (pts.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    if (l.closed) { ctx.closePath(); ctx.fill(); }
+    ctx.stroke();
+  });
+}
+
+function currentClipPlanePayload() {
+  if (!clipEnabled || !clipPlaneObj) return null;
+  const n = new THREE.Vector3(0, 0, 1).applyQuaternion(clipPlaneObj.quaternion).normalize();
+  return {
+    position: [clipPlaneObj.position.x, clipPlaneObj.position.y, clipPlaneObj.position.z],
+    normal: [n.x, n.y, n.z],
+  };
+}
+
+function updateClipInfo() {
+  if (!clipEnabled) { clipInfoEl.textContent = ""; return; }
+  const p = clipPlaneObj.position;
+  const n = new THREE.Vector3(0, 0, 1).applyQuaternion(clipPlaneObj.quaternion).normalize();
+  let txt = `Plane pos: (${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)}) · normal: (${n.x.toFixed(3)}, ${n.y.toFixed(3)}, ${n.z.toFixed(3)})`;
+  if (showCrossSection && lastCrossSectionResult) {
+    const nPts = lastCrossSectionResult.loops.reduce((s, l) => s + l.points_3d.length, 0);
+    txt += ` · cross-section: ${lastCrossSectionResult.loops.length} loop(s), ${nPts} pts`;
+  }
+  clipInfoEl.textContent = txt;
+}
+
+/* Single place that assembles and sends the component's return value. */
+function sendValue() {
+  stSetValue({
+    points,
+    clip_plane: currentClipPlanePayload(),
+    cross_section: showCrossSection ? lastCrossSectionResult : null,
+  });
+}
+
 /* ---------- Sliders <-> Camera ---------- */
 const elevInput = document.getElementById("elev");
 const azimInput = document.getElementById("azim");
@@ -482,6 +990,53 @@ document.getElementById("btn-detail").addEventListener("click", () => {
 
 document.getElementById("btn-clear").addEventListener("click", clearPoints);
 
+/* ---------- Cutting plane: UI wiring ---------- */
+const clipCheckbox = document.getElementById("clip-enable");
+const clipModeCtrl = document.getElementById("clip-mode-ctrl");
+const btnClipMove = document.getElementById("btn-clip-move");
+const btnClipRotate = document.getElementById("btn-clip-rotate");
+const btnClipFlip = document.getElementById("btn-clip-flip");
+const crossSectionCtrl = document.getElementById("clip-cross-section-ctrl");
+const crossSectionCheckbox = document.getElementById("clip-cross-section");
+const clip2DCtrl = document.getElementById("cross-section-overlay");
+const btnClipExport = document.getElementById("btn-clip-export");
+const clipInfoEl = document.getElementById("clip-info");
+
+clipCheckbox.addEventListener("change", () => {
+  setClipEnabled(clipCheckbox.checked);
+  sendValue();
+});
+
+btnClipMove.addEventListener("click", () => {
+  transformControls.setMode("translate");
+  btnClipMove.classList.add("active");
+  btnClipRotate.classList.remove("active");
+});
+
+btnClipRotate.addEventListener("click", () => {
+  transformControls.setMode("rotate");
+  btnClipRotate.classList.add("active");
+  btnClipMove.classList.remove("active");
+});
+
+btnClipFlip.addEventListener("click", () => {
+  clipPlaneObj.rotateY(Math.PI); // flips the local +Z axis, i.e. the plane normal
+  updateClipPlaneFromObject();
+  if (showCrossSection) recomputeCrossSection();
+  updateClipInfo();
+  sendValue();
+});
+
+crossSectionCheckbox.addEventListener("change", () => {
+  setShowCrossSection(crossSectionCheckbox.checked);
+  sendValue();
+});
+
+btnClipExport.addEventListener("click", () => {
+  if (showCrossSection) recomputeCrossSection();
+  sendValue();
+});
+
 /* ---------- Clicking and points ---------- */
 function onModelClick(e) {
   if (!currentObject) return;
@@ -498,7 +1053,7 @@ function addPoint(point, uv) {
   points.push({ point, uv });
   if (point) addMarker(point);
   updatePointsInfo();
-  stSetValue(points);
+  sendValue();
 }
 
 function addMarker(point) {
@@ -531,7 +1086,7 @@ function clearPoints() {
   markersGroup.clear();
   hideMarkerTooltip();
   updatePointsInfo();
-  stSetValue(points);
+  sendValue();
 }
 
 function updatePointsInfo() {
@@ -561,6 +1116,20 @@ function handleRender(args) {
     setMarkerScale(args.marker_size);
   }
 
+  if (typeof args.enable_clipping === "boolean" && args.enable_clipping !== clipEnabled) {
+    setClipEnabled(args.enable_clipping);
+  }
+  if (args.clip_plane_position || args.clip_plane_normal) {
+    const key = JSON.stringify([args.clip_plane_position || null, args.clip_plane_normal || null]);
+    if (key !== lastPyClipKey) {
+      lastPyClipKey = key;
+      setClipPlaneTransform(args.clip_plane_position, args.clip_plane_normal);
+    }
+  }
+  if (typeof args.show_cross_section === "boolean" && args.show_cross_section !== showCrossSection) {
+    setShowCrossSection(args.show_cross_section);
+  }
+
   const modelType = args.model_type || "glb";
   if (modelType === "objtex") {
     const key = `objtex|${args.obj_url || ""}|${args.texture_url || ""}`;
@@ -587,6 +1156,19 @@ window.addEventListener("message", (event) => {
 initScene();
 stReady();
 stSetFrameHeight(document.getElementById("app").scrollHeight);
+
+/* Any DOM change that alters the panel's height (toggling "Cutting plane",
+ * "Show cross-section", etc. all show/hide rows below the 3D view) must be
+ * reflected in the iframe's height, or the newly revealed controls end up
+ * clipped off. Rather than remembering to call stSetFrameHeight() after
+ * every such toggle, watch the whole app element and resize automatically. */
+if (typeof ResizeObserver !== "undefined") {
+  const appEl = document.getElementById("app");
+  const resizeObserver = new ResizeObserver(() => {
+    stSetFrameHeight(appEl.scrollHeight);
+  });
+  resizeObserver.observe(appEl);
+}
 </script>
 </body>
 </html>

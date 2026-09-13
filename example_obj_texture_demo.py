@@ -62,13 +62,14 @@ with st.sidebar:
     # the single source of truth once rendered.
 
 if obj_path is not None:
-    points = show_3d_viewer(
+    result = show_3d_viewer(
         obj_path=obj_path,
         texture_path=texture_path,
         background_color=bg_color,
         height=680,
         key="viewer-objtex",
     )
+    points = result["points"]
 
     st.subheader("Selected points")
     if points:
