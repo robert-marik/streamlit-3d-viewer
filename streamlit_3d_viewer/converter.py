@@ -3,19 +3,19 @@ Convert an OBJ mesh (+ MTL + JPG/PNG texture) into a leaner GLB or glTF,
 optionally with Draco geometry compression, and report detailed stats
 about the process.
 
-Draco compression requires the Node.js CLI tool `@gltf-transform/cli`:
+Draco compression uses trimesh's built-in `extension_draco` export option,
+which is pure Python and only needs the `DracoPy` package:
 
-    npm install -g @gltf-transform/cli
+    pip install DracoPy
 
-If the tool is not available, compression is skipped and a plain (but
-still much smaller than the original OBJ+MTL+texture) binary GLB is
-produced.
+No Node.js / npm toolchain is required. If `DracoPy` is not installed,
+compression is skipped and a plain (but still much smaller than the
+original OBJ+MTL+texture) binary GLB is produced.
 """
 
 from __future__ import annotations
 
 import shutil
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -297,42 +297,33 @@ def obj_to_model(
 
 def compress_with_draco(model_path, output_path=None):
     """
-    Compress a GLB/glTF's geometry with Draco (via the gltf-transform CLI).
+    Re-encode a GLB/glTF's geometry with Draco (KHR_draco_mesh_compression),
+    via trimesh's native `extension_draco` export support. Pure Python —
+    only needs `pip install DracoPy`, no Node.js/npm.
+
+    Loads the mesh back from `model_path` and re-exports it (to
+    `output_path`, defaulting to overwriting `model_path`) with geometry
+    compression turned on; textures and materials are carried over as-is.
 
     Returns (success: bool, message: str).
     """
     model_path = Path(model_path)
     output_path = Path(output_path) if output_path else model_path
 
-    if shutil.which("gltf-transform") is None:
-        return False, (
-            "The 'gltf-transform' CLI was not found on PATH. "
-            "Install it with: npm install -g @gltf-transform/cli"
-        )
+    try:
+        import DracoPy  # noqa: F401  (presence check; trimesh calls into it internally)
+    except ImportError:
+        return False, "The 'DracoPy' package was not found. Install it with: pip install DracoPy"
 
+    file_type = model_path.suffix.lstrip(".").lower()
     tmp_out = output_path.with_name(output_path.stem + ".draco.tmp" + output_path.suffix)
     try:
-        subprocess.run(
-            [
-                "gltf-transform",
-                "draco",
-                str(model_path),
-                str(tmp_out),
-                "--method",
-                "edgebreaker",
-                "--quantize-position",
-                "14",
-                "--quantize-texcoord",
-                "12",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        mesh = trimesh.load(model_path, file_type=file_type, force="mesh", process=False)
+        mesh.export(str(tmp_out), file_type=file_type, extension_draco=True)
         shutil.move(str(tmp_out), str(output_path))
         return True, "Draco compression applied successfully."
-    except subprocess.CalledProcessError as exc:
-        return False, f"Draco compression failed: {exc.stderr}"
+    except Exception as exc:
+        return False, f"Draco compression failed: {exc}"
     finally:
         if tmp_out.exists():
             tmp_out.unlink(missing_ok=True)
