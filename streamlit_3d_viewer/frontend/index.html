@@ -608,7 +608,7 @@ function setClipEnabled(enabled) {
 function setShowBothClipHalves(show) {
   requestedShowBothClipHalves = !!show;
   showBothClipHalves = clipEnabled ? requestedShowBothClipHalves : false;
-  bothHalvesCheckbox.checked = showBothClipHalves;
+  bothHalvesCheckbox.checked = requestedShowBothClipHalves;
   applyClippingPlanes();
   if (showCrossSection) recomputeCrossSection();
   updateClipInfo();
