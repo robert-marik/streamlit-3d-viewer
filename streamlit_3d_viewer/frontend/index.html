@@ -199,6 +199,7 @@ let draggedMarkerIndex = -1;
 let clipEnabled = false;
 let showCrossSection = false;
 let showBothClipHalves = false;
+let requestedShowBothClipHalves = false;
 let clipPlaneObj = null;      // Object3D: position/quaternion define the plane (local +Z = normal)
 let clipPlaneMesh = null;     // translucent visual quad
 let clipPlaneBorder = null;   // wireframe border of the quad
@@ -599,17 +600,17 @@ function setClipEnabled(enabled) {
   crossSectionCtrl.style.display = enabled ? "flex" : "none";
   btnClipExport.style.display = enabled ? "inline-block" : "none";
   if (!enabled) {
-    setShowBothClipHalves(false);
     setShowCrossSection(false);
   }
+  setShowBothClipHalves(requestedShowBothClipHalves);
   applyClippingPlanes();
   updateClipInfo();
 }
 
 function setShowBothClipHalves(show) {
-  if (!clipEnabled) show = false;
-  showBothClipHalves = show;
-  bothHalvesCheckbox.checked = show;
+  requestedShowBothClipHalves = !!show;
+  showBothClipHalves = clipEnabled ? requestedShowBothClipHalves : false;
+  bothHalvesCheckbox.checked = showBothClipHalves;
   applyClippingPlanes();
   if (showCrossSection) recomputeCrossSection();
   updateClipInfo();
