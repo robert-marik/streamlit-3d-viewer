@@ -143,6 +143,11 @@
     <div id="cross-section-overlay" style="display:none;">
       <div id="cross-section-overlay-label">Cross-section</div>
       <canvas id="cross-section-2d" width="200" height="140"></canvas>
+      <div id="area-unit-ctrl" style="display:flex;gap:10px;align-items:center;font-size:11px;margin:4px 0;">
+        <span>Units:</span>
+        <label><input type="radio" name="area-unit" id="area-unit-m2" value="m2" checked /> m&sup2;</label>
+        <label><input type="radio" name="area-unit" id="area-unit-cm2" value="cm2" /> cm&sup2;</label>
+      </div>
       <table id="cross-section-table" style="display:none;">
         <caption>Cross-section polygons and areas</caption>
         <thead>
@@ -204,6 +209,11 @@
     </div>
     <button id="btn-clip-export" type="button" style="display:none;">Export cut polygon</button>
     <div id="clip-info"></div>
+    <div id="clip-keys-hint" style="display:none;font-size:11px;color:var(--stv-muted-text);margin-top:4px;line-height:1.5;">
+      Click the 3D view, then: <b>C</b> cut on/off &middot; <b>1/2/3</b> axis X/Y/Z &middot;
+      <b>&uarr;/&darr;</b> move plane (Shift = fast) &middot; <b>G</b> move/rotate gizmo &middot;
+      <b>F</b> flip side &middot; <b>B</b> both halves &middot; <b>S</b> cross-section &middot; <b>R</b> reset
+    </div>
   </div>
 </div>
 
@@ -261,6 +271,18 @@ let clipNormalSetByPython = false;
 let lastPyClipKey = null;
 let recomputeTimer = null;
 let crossSectionStatusTimer = null;
+
+/* "Show both halves": a group of cloned meshes, each clipped by the
+ * *opposite* plane from the primary object, offset a bit along the
+ * normal so both cut faces are clearly visible side by side. */
+let bothHalvesGroup = new THREE.Group();
+let threePlaneNegated = new THREE.Plane(); // kept in sync with threePlane, negated
+
+/* Cross-section area table: unitScale = meters per one model unit
+ * (set from Python via `unit_scale`, default 1.0 = model already in
+ * meters, the glTF convention). areaUnit = which column to display. */
+let unitScale = 1.0;
+let areaUnit = "m2";
 
 const wrap = document.getElementById("canvas-wrap");
 const markerTooltip = document.getElementById("marker-tooltip");
@@ -567,6 +589,7 @@ function initClipping() {
   });
 
   scene.add(crossSectionGroup);
+  scene.add(bothHalvesGroup);
   updateClipPlaneFromObject();
 }
 
@@ -576,6 +599,25 @@ function updateClipPlaneFromObject() {
   if (!clipPlaneObj) return;
   const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(clipPlaneObj.quaternion).normalize();
   threePlane.setFromNormalAndCoplanarPoint(normal, clipPlaneObj.position);
+  threePlaneNegated.copy(threePlane).negate();
+  updateBothHalvesOffset();
+}
+
+/* How far apart to nudge the two halves so the cut faces are readable,
+ * scaled to the model's own size. */
+function bothHalvesGap() {
+  if (!currentObject) return 0;
+  const box = new THREE.Box3().setFromObject(currentObject);
+  const size = box.getSize(new THREE.Vector3());
+  return (Math.max(size.x, size.y, size.z) || 1) * 0.05;
+}
+
+/* Cheap: just repositions the already-built clone group along the
+ * (possibly just-changed) plane normal. Safe to call on every drag frame. */
+function updateBothHalvesOffset() {
+  if (bothHalvesGroup.children.length === 0) return;
+  const gap = bothHalvesGap();
+  bothHalvesGroup.position.copy(threePlane.normal).multiplyScalar(gap);
 }
 
 /* Turn a [x,y,z] position and/or [nx,ny,nz] normal coming from Python into
@@ -630,11 +672,42 @@ function applyClippingPlanes() {
     if (child.isMesh && child.material) {
       const mats = Array.isArray(child.material) ? child.material : [child.material];
       mats.forEach((m) => {
-        m.clippingPlanes = clipEnabled && !showBothClipHalves ? [threePlane] : [];
+        // The primary object is ALWAYS clipped by the single plane when
+        // clipping is on, regardless of "both halves" — the other half
+        // is a separate cloned group (see rebuildBothHalvesGroup), not
+        // achieved by turning clipping off here.
+        m.clippingPlanes = clipEnabled ? [threePlane] : [];
         m.needsUpdate = true;
       });
     }
   });
+  rebuildBothHalvesGroup();
+}
+
+/* Build (or tear down) the second, oppositely-clipped copy of the model
+ * used by "Show both halves". Only the mesh clones are (re)built here;
+ * cheap per-frame repositioning during a drag is handled separately by
+ * updateBothHalvesOffset(), since the clip plane itself is a shared,
+ * live-updated THREE.Plane reference (threePlaneNegated). */
+function rebuildBothHalvesGroup() {
+  bothHalvesGroup.clear();
+  bothHalvesGroup.position.set(0, 0, 0);
+  if (!currentObject || !clipEnabled || !showBothClipHalves) return;
+  currentObject.traverse((child) => {
+    if (!child.isMesh || !child.material) return;
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    const clonedMats = mats.map((m) => {
+      const cm = m.clone();
+      cm.clippingPlanes = [threePlaneNegated];
+      cm.needsUpdate = true;
+      return cm;
+    });
+    const mesh = new THREE.Mesh(child.geometry, clonedMats.length > 1 ? clonedMats : clonedMats[0]);
+    mesh.matrix.copy(child.matrixWorld);
+    mesh.matrixAutoUpdate = false;
+    bothHalvesGroup.add(mesh);
+  });
+  updateBothHalvesOffset();
 }
 
 function setClipEnabled(enabled) {
@@ -649,6 +722,7 @@ function setClipEnabled(enabled) {
   bothHalvesCtrl.style.display = enabled ? "flex" : "none";
   crossSectionCtrl.style.display = enabled ? "flex" : "none";
   btnClipExport.style.display = enabled ? "inline-block" : "none";
+  clipKeysHint.style.display = enabled ? "block" : "none";
   if (!enabled) {
     setShowCrossSection(false);
   }
@@ -659,10 +733,9 @@ function setShowBothClipHalves(show) {
   requestedShowBothClipHalves = !!show;
   showBothClipHalves = clipEnabled ? requestedShowBothClipHalves : false;
   bothHalvesCheckbox.checked = showBothClipHalves;
-  crossSectionCtrl.style.display = clipEnabled && !showBothClipHalves ? "flex" : "none";
-  if (showBothClipHalves && showCrossSection) {
-    setShowCrossSection(false);
-  }
+  // Cross-section stays available regardless of both-halves: it's computed
+  // from the full, unclipped geometry either way, so the cut outline/fill
+  // and the area table keep working when both halves are visible.
   applyClippingPlanes();
   if (clipEnabled && showCrossSection) recomputeCrossSection();
   updateClipInfo();
@@ -967,6 +1040,16 @@ function polygonAreaInPlane(points3d, planeBasis) {
   return polygonArea2D(points2d);
 }
 
+/* Convert a raw (native model units squared) area into the currently
+ * selected display unit, using the meters-per-model-unit `unitScale`
+ * supplied from Python (`unit_scale`, defaults to 1.0 = already meters). */
+function formatArea(nativeArea) {
+  if (typeof nativeArea !== "number" || !Number.isFinite(nativeArea)) return null;
+  const areaM2 = nativeArea * unitScale * unitScale;
+  const value = areaUnit === "cm2" ? areaM2 * 10000 : areaM2;
+  return `${value.toFixed(4)} ${areaUnit === "cm2" ? "cm\u00B2" : "m\u00B2"}`;
+}
+
 function announceCrossSectionStatus(statusEl, message) {
   if (!statusEl) return;
   if (crossSectionStatusTimer) {
@@ -1004,14 +1087,9 @@ function renderCrossSectionTable(payload) {
   if (tableEl) tableEl.style.display = "table";
   if (emptyEl) emptyEl.style.display = "none";
   const closedLoops = loops.filter((loop) => loop.closed);
-  const areas = [];
-  const areaSummaries = [];
-  let unavailableCount = 0;
-  closedLoops.forEach((loop, i) => {
-    const tr = document.createElement("tr");
-    const polygonCell = document.createElement("td");
-    polygonCell.textContent = String(i + 1);
-    const areaCell = document.createElement("td");
+
+  // Compute each polygon's native-unit area first...
+  const withArea = closedLoops.map((loop) => {
     let area = null;
     if (Array.isArray(loop.points_2d) && loop.points_2d.length >= 3) {
       area = polygonArea2D(loop.points_2d);
@@ -1021,10 +1099,30 @@ function renderCrossSectionTable(payload) {
     ) {
       area = polygonAreaInPlane(loop.points_3d, payload.plane_basis);
     }
-    if (typeof area === "number" && Number.isFinite(area)) {
-      areas.push(area);
-      areaCell.textContent = area.toFixed(4);
-      areaSummaries.push(`polygon ${i + 1}: ${area.toFixed(4)}`);
+    return { area };
+  });
+
+  // ...then sort largest-first, so the table (and the announced summary)
+  // always lead with the biggest polygon regardless of triangulation order.
+  withArea.sort((a, b) => {
+    const aa = typeof a.area === "number" ? a.area : -Infinity;
+    const bb = typeof b.area === "number" ? b.area : -Infinity;
+    return bb - aa;
+  });
+
+  const areaSummaries = [];
+  let unavailableCount = 0;
+  let totalAreaM2 = 0;
+  withArea.forEach((item, i) => {
+    const tr = document.createElement("tr");
+    const polygonCell = document.createElement("td");
+    polygonCell.textContent = String(i + 1);
+    const areaCell = document.createElement("td");
+    const formatted = formatArea(item.area);
+    if (formatted) {
+      areaCell.textContent = formatted;
+      areaSummaries.push(`polygon ${i + 1}: ${formatted}`);
+      totalAreaM2 += item.area * unitScale * unitScale;
     } else {
       areaCell.textContent = "N/A";
       areaSummaries.push(`polygon ${i + 1}: unavailable`);
@@ -1035,19 +1133,17 @@ function renderCrossSectionTable(payload) {
     tbody.appendChild(tr);
   });
   if (statusEl) {
-    const totalArea = areas.reduce((sum, a) => sum + a, 0);
     const maxListed = 5;
     const listed = areaSummaries.slice(0, maxListed).join("; ");
     const more = areaSummaries.length > maxListed ? `; and ${areaSummaries.length - maxListed} more` : "";
-    const areaSummary = areas.length > 0
-      ? `total area ${totalArea.toFixed(4)} square units`
-      : "areas unavailable";
+    const totalFormatted = formatArea(unitScale > 0 ? totalAreaM2 / (unitScale * unitScale) : totalAreaM2);
+    const areaSummary = totalFormatted ? `total area ${totalFormatted}` : "areas unavailable";
     const availabilitySummary = unavailableCount > 0
       ? ` (${unavailableCount} polygon area value(s) unavailable)`
       : "";
     announceCrossSectionStatus(
       statusEl,
-      `Cross-section has ${closedLoops.length} polygon(s), ${areaSummary}${availabilitySummary}. ` +
+      `Cross-section has ${closedLoops.length} polygon(s), sorted largest first. ${areaSummary}${availabilitySummary}. ` +
       `Areas: ${listed || "none"}${more}.`
     );
   }
@@ -1189,6 +1285,17 @@ const crossSectionCheckbox = document.getElementById("clip-cross-section");
 const clip2DCtrl = document.getElementById("cross-section-overlay");
 const btnClipExport = document.getElementById("btn-clip-export");
 const clipInfoEl = document.getElementById("clip-info");
+const clipKeysHint = document.getElementById("clip-keys-hint");
+const areaUnitM2Radio = document.getElementById("area-unit-m2");
+const areaUnitCm2Radio = document.getElementById("area-unit-cm2");
+
+function onAreaUnitChange() {
+  areaUnit = areaUnitCm2Radio.checked ? "cm2" : "m2";
+  // Re-render from the cached payload — no need to recompute the slice.
+  renderCrossSectionTable(lastCrossSectionResult);
+}
+areaUnitM2Radio.addEventListener("change", onAreaUnitChange);
+areaUnitCm2Radio.addEventListener("change", onAreaUnitChange);
 
 clipCheckbox.addEventListener("change", () => {
   setClipEnabled(clipCheckbox.checked);
@@ -1228,6 +1335,111 @@ crossSectionCheckbox.addEventListener("change", () => {
 btnClipExport.addEventListener("click", () => {
   if (showCrossSection) recomputeCrossSection();
   sendValue();
+});
+
+/* ---------- Cutting plane: keyboard shortcuts ---------- */
+// `wrap` (#canvas-wrap) is made focusable so keys are scoped to the
+// viewer and don't leak to/from the rest of the Streamlit page.
+wrap.setAttribute("tabindex", "0");
+wrap.style.outline = "none";
+wrap.addEventListener("pointerdown", () => wrap.focus());
+
+function nudgeClipPlane(sign, big) {
+  if (!clipEnabled || !clipPlaneObj) return;
+  const box = currentObject ? new THREE.Box3().setFromObject(currentObject) : null;
+  const size = box ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(1, 1, 1);
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const step = maxDim * (big ? 0.05 : 0.01);
+  const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(clipPlaneObj.quaternion).normalize();
+  clipPlaneObj.position.addScaledVector(normal, sign * step);
+  updateClipPlaneFromObject();
+  if (showCrossSection) scheduleRecomputeCrossSection();
+  updateClipInfo();
+  sendValue();
+}
+
+function snapClipNormalToAxis(axisVec) {
+  if (!clipEnabled || !clipPlaneObj) return;
+  clipPositionSetByPython = false; // a manual axis snap overrides any earlier Python pin
+  clipPlaneObj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), axisVec);
+  updateClipPlaneFromObject();
+  if (showCrossSection) recomputeCrossSection();
+  updateClipInfo();
+  sendValue();
+}
+
+function resetClipPlane() {
+  if (!clipEnabled || !clipPlaneObj || !currentObject) return;
+  const box = new THREE.Box3().setFromObject(currentObject);
+  clipPlaneObj.position.copy(box.getCenter(new THREE.Vector3()));
+  clipPlaneObj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0));
+  updateClipPlaneFromObject();
+  if (showCrossSection) recomputeCrossSection();
+  updateClipInfo();
+  sendValue();
+}
+
+wrap.addEventListener("keydown", (e) => {
+  switch (e.key) {
+    case "c": case "C":
+      setClipEnabled(!clipEnabled);
+      sendValue();
+      e.preventDefault();
+      break;
+    case "1":
+      snapClipNormalToAxis(new THREE.Vector3(1, 0, 0));
+      e.preventDefault();
+      break;
+    case "2":
+      snapClipNormalToAxis(new THREE.Vector3(0, 1, 0));
+      e.preventDefault();
+      break;
+    case "3":
+      snapClipNormalToAxis(new THREE.Vector3(0, 0, 1));
+      e.preventDefault();
+      break;
+    case "ArrowUp":
+      nudgeClipPlane(1, e.shiftKey);
+      e.preventDefault();
+      break;
+    case "ArrowDown":
+      nudgeClipPlane(-1, e.shiftKey);
+      e.preventDefault();
+      break;
+    case "g": case "G":
+      if (clipEnabled) {
+        const next = transformControls.getMode() === "translate" ? "rotate" : "translate";
+        transformControls.setMode(next);
+        btnClipMove.classList.toggle("active", next === "translate");
+        btnClipRotate.classList.toggle("active", next === "rotate");
+      }
+      e.preventDefault();
+      break;
+    case "f": case "F":
+      if (clipEnabled) btnClipFlip.click();
+      e.preventDefault();
+      break;
+    case "b": case "B":
+      if (clipEnabled) {
+        setShowBothClipHalves(!showBothClipHalves);
+        sendValue();
+      }
+      e.preventDefault();
+      break;
+    case "s": case "S":
+      if (clipEnabled) {
+        setShowCrossSection(!showCrossSection);
+        sendValue();
+      }
+      e.preventDefault();
+      break;
+    case "r": case "R":
+      resetClipPlane();
+      e.preventDefault();
+      break;
+    default:
+      break;
+  }
 });
 
 /* ---------- Clicking and points ---------- */
@@ -1327,6 +1539,10 @@ function handleRender(args) {
   }
   if (typeof args.show_cross_section === "boolean" && args.show_cross_section !== showCrossSection) {
     setShowCrossSection(args.show_cross_section);
+  }
+  if (typeof args.unit_scale === "number" && args.unit_scale > 0 && args.unit_scale !== unitScale) {
+    unitScale = args.unit_scale;
+    if (lastCrossSectionResult) renderCrossSectionTable(lastCrossSectionResult);
   }
 
   const modelType = args.model_type || "glb";

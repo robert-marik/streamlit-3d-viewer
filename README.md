@@ -157,6 +157,29 @@ points = show_3d_viewer(obj_path="scan.obj", texture_path="scan.jpg")
 the in-component checkboxes keep their current frontend state across reruns.
 If you pass `False` explicitly, Python forces the corresponding feature off.
 
+## Cutting-plane fixes (local patch)
+
+- **Keyboard shortcuts** for the cutting plane, once you've clicked inside
+  the 3D view: `C` toggle clipping, `1`/`2`/`3` snap the normal to X/Y/Z,
+  `Up`/`Down` nudge the plane along its normal (hold `Shift` for a bigger
+  step), `G` switch the gizmo between move/rotate, `F` flip the side,
+  `B` toggle "show both halves", `S` toggle the cross-section, `R` reset
+  the plane to the model's center.
+- **"Show both halves" actually shows both halves now.** It used to
+  disable clipping entirely (`clippingPlanes = []`), showing the whole
+  uncut model. It now renders a second, oppositely-clipped copy of the
+  model, nudged apart along the plane's normal so both cut faces are
+  visible at once.
+- **Cross-section + both halves can be shown together.** Enabling "Show
+  both halves" no longer force-disables/hides "Show cross-section" — the
+  cut outline, fill, and the polygon-area table stay available regardless
+  of which halves are visible (the slice is computed from the original,
+  unclipped geometry either way).
+- **Cross-section area table** now sorts polygons largest-first and has
+  an m²/cm² toggle. Pass `unit_scale` to `show_3d_viewer()` (meters per
+  one model unit; default `1.0` = model already in meters) if your scan
+  was authored in mm/cm, so the displayed areas are correct.
+
 ## Notes / limitations
 
 - The OBJ file (or its MTL) must provide UV coordinates for a texture to

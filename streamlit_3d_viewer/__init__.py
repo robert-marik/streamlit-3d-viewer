@@ -55,6 +55,7 @@ def show_3d_viewer(
     clip_plane_normal=None,
     show_both_clip_halves=None,
     show_cross_section=False,
+    unit_scale=1.0,
     key=None,
 ):
     """
@@ -132,6 +133,15 @@ def show_3d_viewer(
         Can also be toggled with the "Show cross-section" checkbox. If
         left as ``None`` (default), the frontend checkbox controls this
         state.
+    unit_scale : float
+        How many *meters* one unit of the model's own coordinate space
+        represents. glTF/GLB models are conventionally authored in
+        meters, so the default ``1.0`` is correct for most converted
+        scans. If your source OBJ/GLB was authored in millimeters, pass
+        ``0.001``; for centimeters, ``0.01``. This only affects the
+        cross-section area table's m^2/cm^2 display (a UI toggle next to
+        the table lets the user pick which of the two to show) — it does
+        not rescale the geometry itself.
     key : str | None
         Streamlit component key.
 
@@ -165,6 +175,7 @@ def show_3d_viewer(
         ),
         show_both_clip_halves=bool(show_both_clip_halves),
         show_cross_section=bool(show_cross_section),
+        unit_scale=float(unit_scale),
         default=_EMPTY_VALUE,
         key=key,
     )
