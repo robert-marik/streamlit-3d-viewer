@@ -74,13 +74,13 @@
     margin-top: 6px;
     border-collapse: collapse;
     color: #eeeeee;
-    font-size: 10px;
+    font-size: 11px;
   }
   #cross-section-table caption {
     caption-side: top;
     text-align: left;
     color: #eeeeee;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 600;
     padding: 0 0 2px 0;
   }
@@ -95,7 +95,7 @@
   #cross-section-table-empty {
     margin-top: 6px;
     color: rgba(255, 255, 255, 0.75);
-    font-size: 10px;
+    font-size: 11px;
   }
   .sr-only {
     position: absolute;
@@ -929,6 +929,22 @@ function polygonArea2D(points) {
   return Math.abs(twiceArea) * 0.5;
 }
 
+function polygonAreaInPlane(points3d, planeBasis) {
+  if (!Array.isArray(points3d) || points3d.length < 3 || !planeBasis) return 0;
+  const origin = planeBasis.origin || [0, 0, 0];
+  const uAxis = planeBasis.u_axis || [1, 0, 0];
+  const vAxis = planeBasis.v_axis || [0, 1, 0];
+  const points2d = points3d.map(([x, y, z]) => {
+    const dx = x - origin[0];
+    const dy = y - origin[1];
+    const dz = z - origin[2];
+    const u = dx * uAxis[0] + dy * uAxis[1] + dz * uAxis[2];
+    const v = dx * vAxis[0] + dy * vAxis[1] + dz * vAxis[2];
+    return [u, v];
+  });
+  return polygonArea2D(points2d);
+}
+
 function renderCrossSectionTable(payload) {
   const tbody = document.getElementById("cross-section-table-body");
   const tableEl = document.getElementById("cross-section-table");
@@ -956,7 +972,7 @@ function renderCrossSectionTable(payload) {
     const polygonCell = document.createElement("td");
     polygonCell.textContent = String(i + 1);
     const areaCell = document.createElement("td");
-    const area = polygonArea2D(loop.points_2d);
+    const area = polygonAreaInPlane(loop.points_3d, payload?.plane_basis);
     areas.push(area);
     areaCell.textContent = area.toFixed(4);
     tr.appendChild(polygonCell);
