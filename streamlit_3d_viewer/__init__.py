@@ -70,6 +70,11 @@ def show_3d_viewer(
        where the GLB conversion step isn't worth it, but the file is
        transferred uncompressed, so prefer the GLB path for large scans.
 
+    The clipping toggles (`enable_clipping`, `show_cross_section`) are
+    optional. When omitted (`None`), the component keeps whatever state
+    the frontend checkboxes currently have across Streamlit reruns. Pass
+    explicit booleans to force a particular on/off state from Python.
+
     Parameters
     ----------
     model_path : str | Path | None
