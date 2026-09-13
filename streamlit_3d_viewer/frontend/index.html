@@ -981,7 +981,15 @@ function renderCrossSectionTable(payload) {
   });
   if (statusEl) {
     const totalArea = areas.reduce((sum, a) => sum + a, 0);
-    statusEl.textContent = `Cross-section has ${closedLoops.length} polygon(s), total area ${totalArea.toFixed(4)} square units`;
+    const maxListed = 5;
+    const listed = areas
+      .slice(0, maxListed)
+      .map((a, i) => `polygon ${i + 1}: ${a.toFixed(4)}`)
+      .join("; ");
+    const more = areas.length > maxListed ? `; and ${areas.length - maxListed} more` : "";
+    statusEl.textContent =
+      `Cross-section has ${closedLoops.length} polygon(s), total area ${totalArea.toFixed(4)} square units. ` +
+      `Areas: ${listed}${more}.`;
   }
 }
 
