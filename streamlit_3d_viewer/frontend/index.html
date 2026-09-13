@@ -607,6 +607,7 @@ function setShowBothClipHalves(show) {
   showBothClipHalves = show;
   bothHalvesCheckbox.checked = show;
   applyClippingPlanes();
+  if (showCrossSection) recomputeCrossSection();
   updateClipInfo();
 }
 
