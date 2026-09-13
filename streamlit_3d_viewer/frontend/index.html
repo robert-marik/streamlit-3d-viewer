@@ -76,6 +76,14 @@
     color: #eeeeee;
     font-size: 10px;
   }
+  #cross-section-table caption {
+    caption-side: top;
+    text-align: left;
+    color: #eeeeee;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 0 0 2px 0;
+  }
   #cross-section-table th,
   #cross-section-table td {
     border-top: 1px solid rgba(255, 255, 255, 0.15);
@@ -119,6 +127,7 @@
       <div id="cross-section-overlay-label">Cross-section</div>
       <canvas id="cross-section-2d" width="200" height="140"></canvas>
       <table id="cross-section-table">
+        <caption>Cross-section polygons and areas</caption>
         <thead>
           <tr><th>Polygon</th><th>Area</th></tr>
         </thead>
