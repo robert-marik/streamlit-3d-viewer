@@ -980,10 +980,8 @@ function renderCrossSectionTable(payload) {
     tbody.appendChild(tr);
   });
   if (statusEl) {
-    const labeledAreas = areas
-      .map((a, i) => `polygon ${i + 1} area ${a.toFixed(4)} square units`)
-      .join(", ");
-    statusEl.textContent = `Cross-section has ${closedLoops.length} polygon(s): ${labeledAreas}`;
+    const totalArea = areas.reduce((sum, a) => sum + a, 0);
+    statusEl.textContent = `Cross-section has ${closedLoops.length} polygon(s), total area ${totalArea.toFixed(4)} square units`;
   }
 }
 
