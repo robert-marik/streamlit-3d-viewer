@@ -143,7 +143,7 @@
     <div id="cross-section-overlay" style="display:none;">
       <div id="cross-section-overlay-label">Cross-section</div>
       <canvas id="cross-section-2d" width="200" height="140"></canvas>
-      <table id="cross-section-table">
+      <table id="cross-section-table" style="display:none;">
         <caption>Cross-section polygons and areas</caption>
         <thead>
           <tr><th scope="col">Polygon</th><th scope="col">Area</th></tr>
@@ -991,10 +991,13 @@ function renderCrossSectionTable(payload) {
     polygonCell.textContent = String(i + 1);
     const areaCell = document.createElement("td");
     let area = null;
-    if (Array.isArray(loop.points_3d) && loop.points_3d.length >= 3) {
-      area = polygonAreaInPlane(loop.points_3d, payload?.plane_basis);
-    } else if (Array.isArray(loop.points_2d) && loop.points_2d.length >= 3) {
+    if (Array.isArray(loop.points_2d) && loop.points_2d.length >= 3) {
       area = polygonArea2D(loop.points_2d);
+    } else if (
+      Array.isArray(loop.points_3d) && loop.points_3d.length >= 3 &&
+      payload?.plane_basis && Array.isArray(payload.plane_basis.u_axis) && Array.isArray(payload.plane_basis.v_axis)
+    ) {
+      area = polygonAreaInPlane(loop.points_3d, payload.plane_basis);
     }
     if (typeof area === "number" && Number.isFinite(area)) {
       areas.push(area);
