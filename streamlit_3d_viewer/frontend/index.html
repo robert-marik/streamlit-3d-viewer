@@ -598,12 +598,16 @@ function setClipEnabled(enabled) {
   bothHalvesCtrl.style.display = enabled ? "flex" : "none";
   crossSectionCtrl.style.display = enabled ? "flex" : "none";
   btnClipExport.style.display = enabled ? "inline-block" : "none";
-  if (!enabled) setShowCrossSection(false);
+  if (!enabled) {
+    setShowBothClipHalves(false);
+    setShowCrossSection(false);
+  }
   applyClippingPlanes();
   updateClipInfo();
 }
 
 function setShowBothClipHalves(show) {
+  if (!clipEnabled) show = false;
   showBothClipHalves = show;
   bothHalvesCheckbox.checked = show;
   applyClippingPlanes();
