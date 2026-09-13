@@ -98,7 +98,7 @@
 </head>
 <body>
 <div id="app">
-  <div id="canvas-wrap">
+  <div id="canvas-wrap" role="region" aria-label="3D viewer canvas" aria-describedby="hint">
     <div id="marker-tooltip"></div>
     <div id="cross-section-overlay" style="display:none;">
       <div id="cross-section-overlay-label">Cross-section</div>
@@ -1030,6 +1030,7 @@ function setClipGizmoMode(mode) {
 window.addEventListener("keydown", (event) => {
   if (!clipEnabled || !transformControls || !transformControls.enabled) return;
   if (!pointerInsideViewer) return;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
   const active = document.activeElement;
   const tag = active && active.tagName ? active.tagName.toUpperCase() : "";
   if (tag === "INPUT" || tag === "TEXTAREA" || (active && active.isContentEditable)) return;
