@@ -1147,7 +1147,7 @@ function handleRender(args) {
   }
   if (
     typeof args.show_both_clip_halves === "boolean"
-    && args.show_both_clip_halves !== showBothClipHalves
+    && args.show_both_clip_halves !== requestedShowBothClipHalves
   ) {
     setShowBothClipHalves(args.show_both_clip_halves);
   }
