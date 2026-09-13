@@ -255,6 +255,7 @@ let clipPositionSetByPython = false;
 let clipNormalSetByPython = false;
 let lastPyClipKey = null;
 let recomputeTimer = null;
+let crossSectionStatusTimer = null;
 
 const wrap = document.getElementById("canvas-wrap");
 const markerTooltip = document.getElementById("marker-tooltip");
@@ -948,9 +949,14 @@ function polygonAreaInPlane(points3d, planeBasis) {
 
 function announceCrossSectionStatus(statusEl, message) {
   if (!statusEl) return;
+  if (crossSectionStatusTimer) {
+    clearTimeout(crossSectionStatusTimer);
+    crossSectionStatusTimer = null;
+  }
   statusEl.textContent = "";
-  setTimeout(() => {
+  crossSectionStatusTimer = setTimeout(() => {
     statusEl.textContent = message;
+    crossSectionStatusTimer = null;
   }, 0);
 }
 

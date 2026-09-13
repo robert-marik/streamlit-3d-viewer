@@ -153,6 +153,10 @@ points = show_3d_viewer(report.output_path, opacity=0.9, marker_size=1.2, height
 points = show_3d_viewer(obj_path="scan.obj", texture_path="scan.jpg")
 ```
 
+`enable_clipping` and `show_cross_section` are optional. If you omit them,
+the in-component checkboxes keep their current frontend state across reruns.
+If you pass `False` explicitly, Python forces the corresponding feature off.
+
 ## Notes / limitations
 
 - The OBJ file (or its MTL) must provide UV coordinates for a texture to
