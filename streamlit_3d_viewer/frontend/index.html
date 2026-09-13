@@ -209,6 +209,10 @@ let recomputeTimer = null;
 
 const wrap = document.getElementById("canvas-wrap");
 const markerTooltip = document.getElementById("marker-tooltip");
+let pointerInsideViewer = false;
+
+wrap.addEventListener("mouseenter", () => { pointerInsideViewer = true; });
+wrap.addEventListener("mouseleave", () => { pointerInsideViewer = false; });
 
 function showMarkerTooltip(markerIndex, clientX, clientY) {
   const rect = wrap.getBoundingClientRect();
@@ -1025,6 +1029,7 @@ function setClipGizmoMode(mode) {
 
 window.addEventListener("keydown", (event) => {
   if (!clipEnabled || !transformControls || !transformControls.enabled) return;
+  if (!pointerInsideViewer) return;
   const active = document.activeElement;
   const tag = active && active.tagName ? active.tagName.toUpperCase() : "";
   if (tag === "INPUT" || tag === "TEXTAREA" || (active && active.isContentEditable)) return;
