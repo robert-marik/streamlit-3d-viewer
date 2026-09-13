@@ -961,7 +961,7 @@ function renderCrossSectionTable(payload) {
       emptyEl.style.display = "block";
       emptyEl.textContent = msg;
     }
-    if (statusEl) statusEl.textContent = msg;
+    if (statusEl) statusEl.textContent = loops.length === 0 ? "No intersection" : "Cross-section has no closed polygons.";
     return;
   }
   if (tableEl) tableEl.style.display = "table";
@@ -973,14 +973,18 @@ function renderCrossSectionTable(payload) {
     const polygonCell = document.createElement("td");
     polygonCell.textContent = String(i + 1);
     const areaCell = document.createElement("td");
-    let area = 0;
+    let area = null;
     if (Array.isArray(loop.points_3d) && loop.points_3d.length >= 3) {
       area = polygonAreaInPlane(loop.points_3d, payload?.plane_basis);
     } else if (Array.isArray(loop.points_2d) && loop.points_2d.length >= 3) {
       area = polygonArea2D(loop.points_2d);
     }
-    areas.push(area);
-    areaCell.textContent = area.toFixed(4);
+    if (typeof area === "number" && Number.isFinite(area)) {
+      areas.push(area);
+      areaCell.textContent = area.toFixed(4);
+    } else {
+      areaCell.textContent = "N/A";
+    }
     tr.appendChild(polygonCell);
     tr.appendChild(areaCell);
     tbody.appendChild(tr);
@@ -993,9 +997,12 @@ function renderCrossSectionTable(payload) {
       .map((a, i) => `polygon ${i + 1}: ${a.toFixed(4)}`)
       .join("; ");
     const more = areas.length > maxListed ? `; and ${areas.length - maxListed} more` : "";
+    const areaSummary = areas.length > 0
+      ? `total area ${totalArea.toFixed(4)} square units`
+      : "areas unavailable";
     statusEl.textContent =
-      `Cross-section has ${closedLoops.length} polygon(s), total area ${totalArea.toFixed(4)} square units. ` +
-      `Areas: ${listed}${more}.`;
+      `Cross-section has ${closedLoops.length} polygon(s), ${areaSummary}. ` +
+      `Areas: ${listed || "none"}${more}.`;
   }
 }
 
