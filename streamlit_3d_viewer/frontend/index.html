@@ -946,6 +946,14 @@ function polygonAreaInPlane(points3d, planeBasis) {
   return polygonArea2D(points2d);
 }
 
+function announceCrossSectionStatus(statusEl, message) {
+  if (!statusEl) return;
+  statusEl.textContent = "";
+  setTimeout(() => {
+    statusEl.textContent = message;
+  }, 0);
+}
+
 function renderCrossSectionTable(payload) {
   const tbody = document.getElementById("cross-section-table-body");
   const tableEl = document.getElementById("cross-section-table");
@@ -961,7 +969,10 @@ function renderCrossSectionTable(payload) {
       emptyEl.style.display = "block";
       emptyEl.textContent = msg;
     }
-    if (statusEl) statusEl.textContent = loops.length === 0 ? "No intersection" : "Cross-section has no closed polygons.";
+    announceCrossSectionStatus(
+      statusEl,
+      loops.length === 0 ? "No intersection" : "Cross-section has no closed polygons."
+    );
     return;
   }
   if (tableEl) tableEl.style.display = "table";
@@ -1000,9 +1011,11 @@ function renderCrossSectionTable(payload) {
     const areaSummary = areas.length > 0
       ? `total area ${totalArea.toFixed(4)} square units`
       : "areas unavailable";
-    statusEl.textContent =
+    announceCrossSectionStatus(
+      statusEl,
       `Cross-section has ${closedLoops.length} polygon(s), ${areaSummary}. ` +
-      `Areas: ${listed || "none"}${more}.`;
+      `Areas: ${listed || "none"}${more}.`
+    );
   }
 }
 
