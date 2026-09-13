@@ -105,6 +105,7 @@
     margin: -1px;
     overflow: hidden;
     clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
   }
@@ -972,9 +973,12 @@ function renderCrossSectionTable(payload) {
     const polygonCell = document.createElement("td");
     polygonCell.textContent = String(i + 1);
     const areaCell = document.createElement("td");
-    const area = Array.isArray(loop.points_3d) && loop.points_3d.length >= 3
-      ? polygonAreaInPlane(loop.points_3d, payload?.plane_basis)
-      : polygonArea2D(loop.points_2d);
+    let area = 0;
+    if (Array.isArray(loop.points_3d) && loop.points_3d.length >= 3) {
+      area = polygonAreaInPlane(loop.points_3d, payload?.plane_basis);
+    } else if (Array.isArray(loop.points_2d) && loop.points_2d.length >= 3) {
+      area = polygonArea2D(loop.points_2d);
+    }
     areas.push(area);
     areaCell.textContent = area.toFixed(4);
     tr.appendChild(polygonCell);
