@@ -972,7 +972,9 @@ function renderCrossSectionTable(payload) {
     const polygonCell = document.createElement("td");
     polygonCell.textContent = String(i + 1);
     const areaCell = document.createElement("td");
-    const area = polygonAreaInPlane(loop.points_3d, payload?.plane_basis);
+    const area = Array.isArray(loop.points_3d) && loop.points_3d.length >= 3
+      ? polygonAreaInPlane(loop.points_3d, payload?.plane_basis)
+      : polygonArea2D(loop.points_2d);
     areas.push(area);
     areaCell.textContent = area.toFixed(4);
     tr.appendChild(polygonCell);
