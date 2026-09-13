@@ -69,6 +69,46 @@
     margin-bottom: 4px;
   }
   #cross-section-2d { display: block; background: #111318; border-radius: 4px; }
+  #cross-section-table {
+    width: 100%;
+    margin-top: 6px;
+    border-collapse: collapse;
+    color: #eeeeee;
+    font-size: 11px;
+  }
+  #cross-section-table caption {
+    caption-side: top;
+    text-align: left;
+    color: #eeeeee;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 0 2px 0;
+  }
+  #cross-section-table th,
+  #cross-section-table td {
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    padding: 2px 4px;
+    text-align: left;
+  }
+  #cross-section-table td:last-child,
+  #cross-section-table th:last-child { text-align: right; }
+  #cross-section-table-empty {
+    margin-top: 6px;
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 11px;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
 
   #mesh-info { color: var(--stv-muted-text); font-size: 11px; padding: 6px 4px 0 4px; }
   #points-info { color: var(--stv-muted-text); font-size: 12px; padding: 4px 4px 2px 4px; font-weight: 600; }
@@ -103,6 +143,15 @@
     <div id="cross-section-overlay" style="display:none;">
       <div id="cross-section-overlay-label">Cross-section</div>
       <canvas id="cross-section-2d" width="200" height="140"></canvas>
+      <table id="cross-section-table" style="display:none;">
+        <caption>Cross-section polygons and areas</caption>
+        <thead>
+          <tr><th scope="col">Polygon</th><th scope="col">Area</th></tr>
+        </thead>
+        <tbody id="cross-section-table-body"></tbody>
+      </table>
+      <div id="cross-section-table-empty">No intersection</div>
+      <div id="cross-section-status" class="sr-only" aria-live="polite" aria-atomic="true">No intersection</div>
     </div>
   </div>
 
@@ -211,6 +260,7 @@ let clipPositionSetByPython = false;
 let clipNormalSetByPython = false;
 let lastPyClipKey = null;
 let recomputeTimer = null;
+let crossSectionStatusTimer = null;
 
 const wrap = document.getElementById("canvas-wrap");
 const markerTooltip = document.getElementById("marker-tooltip");
@@ -856,6 +906,7 @@ function renderCrossSection2D(payload) {
     ctx.fillStyle = "rgba(255,255,255,0.45)";
     ctx.font = "11px sans-serif";
     ctx.fillText("No intersection", 10, h / 2);
+    renderCrossSectionTable(null);
     return;
   }
 
@@ -886,6 +937,120 @@ function renderCrossSection2D(payload) {
     if (l.closed) { ctx.closePath(); ctx.fill(); }
     ctx.stroke();
   });
+  renderCrossSectionTable(payload);
+}
+
+function polygonArea2D(points) {
+  if (!points || points.length < 3) return 0;
+  let twiceArea = 0;
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    twiceArea += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(twiceArea) * 0.5;
+}
+
+function polygonAreaInPlane(points3d, planeBasis) {
+  if (!Array.isArray(points3d) || points3d.length < 3 || !planeBasis) return 0;
+  const origin = planeBasis.origin || [0, 0, 0];
+  const uAxis = planeBasis.u_axis || [1, 0, 0];
+  const vAxis = planeBasis.v_axis || [0, 1, 0];
+  const points2d = points3d.map(([x, y, z]) => {
+    const dx = x - origin[0];
+    const dy = y - origin[1];
+    const dz = z - origin[2];
+    const u = dx * uAxis[0] + dy * uAxis[1] + dz * uAxis[2];
+    const v = dx * vAxis[0] + dy * vAxis[1] + dz * vAxis[2];
+    return [u, v];
+  });
+  return polygonArea2D(points2d);
+}
+
+function announceCrossSectionStatus(statusEl, message) {
+  if (!statusEl) return;
+  if (crossSectionStatusTimer) {
+    clearTimeout(crossSectionStatusTimer);
+    crossSectionStatusTimer = null;
+  }
+  statusEl.textContent = "";
+  crossSectionStatusTimer = setTimeout(() => {
+    statusEl.textContent = message;
+    crossSectionStatusTimer = null;
+  }, 0);
+}
+
+function renderCrossSectionTable(payload) {
+  const tbody = document.getElementById("cross-section-table-body");
+  const tableEl = document.getElementById("cross-section-table");
+  const emptyEl = document.getElementById("cross-section-table-empty");
+  const statusEl = document.getElementById("cross-section-status");
+  if (!tbody) return;
+  tbody.replaceChildren();
+  const loops = Array.isArray(payload?.loops) ? payload.loops : [];
+  if (loops.length === 0 || loops.every((loop) => !loop.closed)) {
+    const msg = loops.length === 0 ? "No intersection" : "No closed polygon";
+    if (tableEl) tableEl.style.display = "none";
+    if (emptyEl) {
+      emptyEl.style.display = "block";
+      emptyEl.textContent = msg;
+    }
+    announceCrossSectionStatus(
+      statusEl,
+      loops.length === 0 ? "No intersection" : "Cross-section has no closed polygons."
+    );
+    return;
+  }
+  if (tableEl) tableEl.style.display = "table";
+  if (emptyEl) emptyEl.style.display = "none";
+  const closedLoops = loops.filter((loop) => loop.closed);
+  const areas = [];
+  const areaSummaries = [];
+  let unavailableCount = 0;
+  closedLoops.forEach((loop, i) => {
+    const tr = document.createElement("tr");
+    const polygonCell = document.createElement("td");
+    polygonCell.textContent = String(i + 1);
+    const areaCell = document.createElement("td");
+    let area = null;
+    if (Array.isArray(loop.points_2d) && loop.points_2d.length >= 3) {
+      area = polygonArea2D(loop.points_2d);
+    } else if (
+      Array.isArray(loop.points_3d) && loop.points_3d.length >= 3 &&
+      payload?.plane_basis && Array.isArray(payload.plane_basis.u_axis) && Array.isArray(payload.plane_basis.v_axis)
+    ) {
+      area = polygonAreaInPlane(loop.points_3d, payload.plane_basis);
+    }
+    if (typeof area === "number" && Number.isFinite(area)) {
+      areas.push(area);
+      areaCell.textContent = area.toFixed(4);
+      areaSummaries.push(`polygon ${i + 1}: ${area.toFixed(4)}`);
+    } else {
+      areaCell.textContent = "N/A";
+      areaSummaries.push(`polygon ${i + 1}: unavailable`);
+      unavailableCount += 1;
+    }
+    tr.appendChild(polygonCell);
+    tr.appendChild(areaCell);
+    tbody.appendChild(tr);
+  });
+  if (statusEl) {
+    const totalArea = areas.reduce((sum, a) => sum + a, 0);
+    const maxListed = 5;
+    const listed = areaSummaries.slice(0, maxListed).join("; ");
+    const more = areaSummaries.length > maxListed ? `; and ${areaSummaries.length - maxListed} more` : "";
+    const areaSummary = areas.length > 0
+      ? `total area ${totalArea.toFixed(4)} square units`
+      : "areas unavailable";
+    const availabilitySummary = unavailableCount > 0
+      ? ` (${unavailableCount} polygon area value(s) unavailable)`
+      : "";
+    announceCrossSectionStatus(
+      statusEl,
+      `Cross-section has ${closedLoops.length} polygon(s), ${areaSummary}${availabilitySummary}. ` +
+      `Areas: ${listed || "none"}${more}.`
+    );
+  }
 }
 
 function currentClipPlanePayload() {

@@ -50,7 +50,7 @@ def show_3d_viewer(
     background_color="#1e1e1e",
     opacity=1.0,
     marker_size=1.0,
-    enable_clipping=False,
+    enable_clipping=None,
     clip_plane_position=None,
     clip_plane_normal=None,
     show_both_clip_halves=False,
@@ -70,6 +70,11 @@ def show_3d_viewer(
        diffuse texture. This is handy for quick previews or small scans
        where the GLB conversion step isn't worth it, but the file is
        transferred uncompressed, so prefer the GLB path for large scans.
+
+    The clipping toggles (`enable_clipping`, `show_cross_section`) are
+    optional. When omitted (`None`), the component keeps whatever state
+    the frontend checkboxes currently have across Streamlit reruns. Pass
+    explicit booleans to force a particular on/off state from Python.
 
     Parameters
     ----------
@@ -97,10 +102,11 @@ def show_3d_viewer(
         has its own "Point size" slider, which is the single source of
         truth once rendered and also lets the user resize markers
         already placed.
-    enable_clipping : bool
+    enable_clipping : bool | None
         Show the cutting-plane widget (a draggable/rotatable gizmo) and
         clip the model against it. Can also be turned on/off with the
-        "Cutting plane" checkbox in the component itself.
+        "Cutting plane" checkbox in the component itself. If left as
+        ``None`` (default), the frontend checkbox controls this state.
     clip_plane_position : list[float] | tuple[float, float, float] | None
         `[x, y, z]` position to (re)apply to the cutting plane. This is
         read once per distinct value: the first time it's given it sets
@@ -119,10 +125,12 @@ def show_3d_viewer(
     show_both_clip_halves : bool
         Keep both halves of the model visible while the cutting plane is
         enabled. If ``False`` (default), one half is clipped away.
-    show_cross_section : bool
+    show_cross_section : bool | None
         Compute and draw the polygon(s) where the cutting plane
         intersects the model, and include them in the returned value.
-        Can also be toggled with the "Show cross-section" checkbox.
+        Can also be toggled with the "Show cross-section" checkbox. If
+        left as ``None`` (default), the frontend checkbox controls this
+        state.
     key : str | None
         Streamlit component key.
 
@@ -148,7 +156,6 @@ def show_3d_viewer(
         opacity=float(opacity),
         marker_size=float(marker_size),
         background_color=background_color,
-        enable_clipping=bool(enable_clipping),
         clip_plane_position=(
             [float(v) for v in clip_plane_position] if clip_plane_position is not None else None
         ),
@@ -160,6 +167,10 @@ def show_3d_viewer(
         default=_EMPTY_VALUE,
         key=key,
     )
+    if enable_clipping is not None:
+        kwargs["enable_clipping"] = bool(enable_clipping)
+    if show_cross_section is not None:
+        kwargs["show_cross_section"] = bool(show_cross_section)
 
     if obj_path is not None:
         obj_path = Path(obj_path)
