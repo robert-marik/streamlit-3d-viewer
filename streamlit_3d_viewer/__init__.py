@@ -17,6 +17,12 @@ Usage (GLB/glTF, the recommended, lightweight path):
 Usage (render a raw OBJ + JPG/PNG texture directly, no conversion step):
 
     points = show_3d_viewer(obj_path="scan.obj", texture_path="scan.jpg")
+
+Usage (place many points before triggering a rerun, via an explicit
+"Confirm points" button in the component instead of one rerun per click):
+
+    result = show_3d_viewer(model_path="scan.glb", point_submit_mode="confirm")
+    points = result["points"]
 """
 
 import base64
@@ -62,6 +68,7 @@ def show_3d_viewer(
     unit_scale=1.0,
     show_controls=True,
     initial_points=None,
+    point_submit_mode="immediate",
     key=None,
 ):
     """
@@ -186,6 +193,25 @@ def show_3d_viewer(
         Re-applied only when the value changes (e.g. a new list
         object/content), so it won't wipe out points the user has
         since added or moved with the mouse.
+    point_submit_mode : str
+        Controls when newly clicked/moved/cleared points are sent back
+        to Python (and therefore when they trigger a Streamlit rerun):
+
+        - ``"immediate"`` (default, original behavior): every point
+          added with Shift+Click, every marker drag, and every "Clear
+          points" click is sent right away — one rerun per action.
+        - ``"confirm"``: point edits are kept purely on the frontend
+          side. Nothing is sent to Python until the user clicks the
+          component's own "Confirm points" button, at which point the
+          full current point list (plus clip plane / cross-section /
+          settings) is sent in a single rerun. This is the mode to use
+          if you want the user to place many points before the app
+          reruns at all — see "Minimizing reruns while placing points"
+          in the README.
+
+        Note this only affects the ``points`` part of the returned
+        value. Sliders, checkboxes, and camera changes keep reporting
+        back immediately (on release/end) regardless of this setting.
     key : str | None
         Streamlit component key.
 
@@ -206,6 +232,9 @@ def show_3d_viewer(
           ``points_2d`` are the same points flattened into the plane's own
           in-plane (u, v) axes (see ``plane_basis``), handy for exporting
           a flat cut profile.
+          In ``point_submit_mode="confirm"``, this list reflects only
+          what was on screen the last time the user pressed "Confirm
+          points" — it lags behind clicks made since then, by design.
         - ``settings``: a live snapshot of every other on-screen control,
           in the same shape the matching `show_3d_viewer()` keyword
           arguments expect — ``{"background_color": "#1e1e1e", "opacity":
@@ -220,6 +249,11 @@ def show_3d_viewer(
           reproduce exactly what's currently on screen; see "Reproducing
           the current view" in the README.
     """
+    if point_submit_mode not in ("immediate", "confirm"):
+        raise ValueError(
+            f"point_submit_mode must be 'immediate' or 'confirm', got {point_submit_mode!r}"
+        )
+
     kwargs = dict(
         opacity=float(opacity),
         marker_size=float(marker_size),
@@ -239,6 +273,7 @@ def show_3d_viewer(
         unit_scale=float(unit_scale),
         show_controls=bool(show_controls),
         initial_points=initial_points,
+        point_submit_mode=point_submit_mode,
         default=_EMPTY_VALUE,
         key=key,
     )

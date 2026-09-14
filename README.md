@@ -43,6 +43,11 @@ clean, read-only 3D view.
   (frames the camera so all currently selected points are visible).
 - Click on the model to add a point (3D position + UV); a red marker is
   shown at that spot. Points are returned to Python as a list.
+- **`point_submit_mode`**: choose whether points are sent to Python (and
+  trigger a rerun) after every click, or only once, when the user presses
+  a "Confirm points" button. See
+  [Minimizing reruns while placing points](#minimizing-reruns-while-placing-points)
+  below.
 - Control panel has its own solid dark background with light text, so
   the legend stays readable regardless of Streamlit's light/dark theme
   or page background color.
@@ -206,6 +211,7 @@ Every control in the viewer accepts an initial value as a
 | `show_cross_section` | "Show cross-section" checkbox | `False` |
 | `unit_scale` | Meters per one model unit (for the m² area table) | `1.0` |
 | `initial_points` | Points pre-placed on the model | `None` |
+| `point_submit_mode` | When point edits are sent to Python: `"immediate"` or `"confirm"` (see below) | `"immediate"` |
 | `show_controls` | Show/hide the entire UI (see below) | `True` |
 
 ```python
@@ -260,6 +266,44 @@ this mode — only the on-screen widgets and the cutting-plane's visible
 handle disappear. This is meant for dashboards or reports where you want
 a clean picture of the scan (optionally pre-cut and pre-angled from
 Python) without any Streamlit-independent UI cluttering the page.
+
+### Minimizing reruns while placing points
+
+By default (`point_submit_mode="immediate"`), every Shift+Click that adds
+a point, every marker drag, and every "Clear points" click sends the
+updated point list back to Python right away — which means a Streamlit
+rerun per action. That's fine for one or two points, but if the user
+needs to place many points on a scan (e.g. marking several dozen
+measurement locations on a tree), that's a lot of reruns for no benefit
+until they're actually done.
+
+Pass `point_submit_mode="confirm"` to change this: point edits (add /
+drag / clear) stay purely on the frontend, and a **"Confirm points"**
+button appears in the control panel. Nothing about the points is sent to
+Python — no rerun happens — until the user clicks it. At that point the
+full current point list (together with whatever the clip plane /
+cross-section / other settings currently are) is sent in a single rerun.
+
+```python
+result = show_3d_viewer("scan.glb", point_submit_mode="confirm")
+points = result["points"]  # only reflects the last "Confirm points" click
+```
+
+Notes:
+- The points-info text under the viewer shows "(not yet confirmed)"
+  while there are local edits that haven't been sent yet, and the
+  "Confirm points" button is only enabled while that's the case.
+- This only affects `points`. Sliders, checkboxes, and camera changes
+  keep reporting back immediately (on release/end), in both modes — only
+  point placement/dragging/clearing is deferred.
+- Switching from `"confirm"` back to `"immediate"` on a later rerun
+  flushes any points the user placed but hadn't confirmed yet, so
+  nothing gets silently dropped.
+- `show_controls=False` (read-only/embed mode, above) hides the
+  "Confirm points" button along with the rest of the UI. Combining it
+  with `point_submit_mode="confirm"` effectively makes point-clicking a
+  no-op back to Python, since there's no way to trigger the send — avoid
+  that combination unless that's exactly what you want.
 
 ### Reproducing the current view
 
@@ -336,6 +380,27 @@ this exact view" expander below the viewer, which shows the raw
   `unit_scale` to `show_3d_viewer()` (meters per one model unit; default
   `1.0` = model already in meters) if your scan was authored in mm/cm,
   so the displayed m² values are correct.
+- **The "Cutting plane" / "Show both halves" / "Show cross-section"
+  checkboxes can now actually be toggled by hand in the viewer.** They
+  used to snap back to whatever the Python side last passed on *every*
+  rerun (e.g. adding an unrelated point), because the frontend compared
+  the incoming value against its own current state instead of against
+  the last value Python had actually sent. Fixed to use the latter, the
+  same "only re-apply on an actual change" convention already used for
+  `clip_plane_position`/`clip_gizmo_mode`/etc. — a fixed Python-side
+  `True`/`False` now only forces the checkbox once, on the rerun where
+  it changes, instead of fighting the user on every subsequent rerun.
+- **Shift+click-added points that visually vanish.** A marker used to be
+  centered exactly on the clicked surface point, so roughly half of its
+  sphere sat embedded inside the model; on scan meshes with noisy or
+  near-duplicate geometry (common with photogrammetry), ordinary z-buffer
+  depth-fighting could make the marker lose to the very surface it was
+  sitting on and disappear — even though the point was correctly added
+  to `points` and returned to Python. The *displayed* sphere is now
+  nudged slightly toward the camera off the surface it was placed on; the
+  coordinate actually returned to Python is unaffected (still the exact
+  clicked point), and markers on the model's far side are still properly
+  hidden when you rotate around.
 
 ## Notes / limitations
 
