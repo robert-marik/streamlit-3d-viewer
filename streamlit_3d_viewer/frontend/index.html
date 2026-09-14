@@ -238,12 +238,6 @@ function stReady() { stSend("streamlit:componentReady", { apiVersion: 1 }); }
 function stSetFrameHeight(h) { stSend("streamlit:setFrameHeight", { height: h }); }
 function stSetValue(value) { stSend("streamlit:setComponentValue", { value, dataType: "json" }); }
 
-// Temporary diagnostic marker — open the browser DevTools Console (F12) and
-// reload the page. If you do NOT see this line, the browser/Streamlit is
-// still serving an old cached copy of this file, not the one you just
-// replaced — see the troubleshooting note in README.md.
-console.log("[streamlit_3d_viewer] index.html build: point_submit_mode-v2 (lastSentPoints fix)");
-
 /* ---------- State ---------- */
 let scene, camera, renderer, controls, root, currentObject = null;
 let loadedModelKey = null; // identifies whichever model (glb, or obj+texture) is currently loaded
@@ -1389,10 +1383,6 @@ function sendValue(forceSyncPoints) {
   // truthy Event object instead of a boolean. Only an explicit `true`
   // should force-sync points.
   const syncPoints = forceSyncPoints === true || pointSubmitMode !== "confirm";
-  console.log(
-    `[streamlit_3d_viewer] sendValue() mode=${pointSubmitMode} forceSyncPoints=${!!forceSyncPoints} ` +
-    `syncPoints=${syncPoints} pointsSent=${syncPoints ? points.length : lastSentPoints.length}`
-  );
   if (syncPoints) lastSentPoints = clonePoints(points);
   stSetValue({
     points: lastSentPoints,
@@ -1420,7 +1410,6 @@ function clonePoints(arr) {
  * Shift+Click that places a point), lastSentPoints keeps the reported
  * points frozen at their last-confirmed state. */
 function notifyPointsChanged() {
-  console.log(`[streamlit_3d_viewer] notifyPointsChanged() mode=${pointSubmitMode} points=${points.length}`);
   if (pointSubmitMode === "confirm") {
     pointsDirty = true;
     updatePointsInfo();
@@ -1788,12 +1777,7 @@ function updatePointsInfo() {
 }
 
 /* ---------- Render event from Streamlit ---------- */
-let loggedInitialArgs = false;
 function handleRender(args) {
-  if (!loggedInitialArgs) {
-    loggedInitialArgs = true;
-    console.log("[streamlit_3d_viewer] first render args.point_submit_mode =", args.point_submit_mode);
-  }
   if (args.background_color) {
     scene.background = new THREE.Color(args.background_color);
   }
@@ -1854,9 +1838,6 @@ function handleRender(args) {
     (args.point_submit_mode === "immediate" || args.point_submit_mode === "confirm")
     && args.point_submit_mode !== pointSubmitMode
   ) {
-    console.log(
-      `[streamlit_3d_viewer] point_submit_mode changing: ${pointSubmitMode} -> ${args.point_submit_mode}`
-    );
     pointSubmitMode = args.point_submit_mode;
     // Switching *into* immediate mode flushes anything still pending so
     // it isn't silently lost; switching *into* confirm mode just starts
