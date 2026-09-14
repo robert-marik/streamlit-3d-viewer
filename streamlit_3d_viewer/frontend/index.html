@@ -238,6 +238,12 @@ function stReady() { stSend("streamlit:componentReady", { apiVersion: 1 }); }
 function stSetFrameHeight(h) { stSend("streamlit:setFrameHeight", { height: h }); }
 function stSetValue(value) { stSend("streamlit:setComponentValue", { value, dataType: "json" }); }
 
+// Temporary diagnostic marker — open the browser DevTools Console (F12) and
+// reload the page. If you do NOT see this line, the browser/Streamlit is
+// still serving an old cached copy of this file, not the one you just
+// replaced — see the troubleshooting note in README.md.
+console.log("[streamlit_3d_viewer] index.html build: point_submit_mode-v2 (lastSentPoints fix)");
+
 /* ---------- State ---------- */
 let scene, camera, renderer, controls, root, currentObject = null;
 let loadedModelKey = null; // identifies whichever model (glb, or obj+texture) is currently loaded
@@ -249,6 +255,12 @@ let points = []; // {point:[x,y,z], uv:[u,v]}
 // row costs zero reruns until the very end.
 let pointSubmitMode = "immediate";
 let pointsDirty = false; // true when points changed locally but weren't sent yet (confirm mode)
+// Snapshot of `points` as last actually reported to Python. In "confirm"
+// mode, sendValue() sends THIS instead of the live `points` array, so any
+// unrelated control (sliders, orbit-end, etc.) can call sendValue() without
+// leaking not-yet-confirmed point edits. Updated only on an explicit
+// "Confirm points" click, or continuously while in "immediate" mode.
+let lastSentPoints = [];
 let currentOpacity = 1.0;
 let markerScale = 1.0; // user-controlled relative marker size (1.0 = 100%)
 // Reference camera-to-model distance the marker's base radius was tuned
@@ -411,7 +423,12 @@ function initScene() {
   // Reports the camera's final elevation/azimuth back to Python once an
   // orbit/pan/zoom interaction ends (mouse-drag doesn't otherwise touch
   // the elevation/azimuth sliders' own "change" event).
-  controls.addEventListener("end", sendValue);
+  // NOTE: must be an arrow function, not a bare `sendValue` reference —
+  // addEventListener() calls the handler with the Event object as its
+  // first argument, and sendValue(forceSyncPoints) would then receive
+  // that (truthy) Event as forceSyncPoints, forcing a points-sync on
+  // every single orbit interaction regardless of point_submit_mode.
+  controls.addEventListener("end", () => sendValue());
 
   root = new THREE.Group();
   scene.add(root);
@@ -639,17 +656,31 @@ function applyPendingCameraAngles() {
  * e.g. [{point: [x,y,z], uv: [u,v] | null}, ...]. Called right after
  * `clearPoints()` on model load, so it doesn't fight the user's own
  * placed points across unrelated Streamlit reruns (see handleRender's
- * change-detection for the raw `args.initial_points` value). */
+ * change-detection for the raw `args.initial_points` value).
+ *
+ * Deliberately bypasses notifyPointsChanged(): these points came FROM
+ * Python, so Python already knows about them — echoing them straight
+ * back shouldn't light up "Confirm points" as if the user had just
+ * placed them locally. */
 function applyPendingInitialPoints() {
   if (!Array.isArray(pendingInitialPoints)) return;
   pendingInitialPoints.forEach((p) => {
     if (p && Array.isArray(p.point) && p.point.length === 3) {
+      const uv = Array.isArray(p.uv) ? p.uv : null;
+      points.push({ point: p.point, uv });
       // Same surface-embedding issue as manually clicked points can apply
       // here too if the Python-supplied point sits exactly on the mesh —
       // nudge the visual marker toward the camera (see offsetTowardCamera).
-      addPoint(p.point, Array.isArray(p.uv) ? p.uv : null, offsetTowardCamera(p.point));
+      addMarker(offsetTowardCamera(p.point));
     }
   });
+  // clearPoints() (called just before this, on model load) may have left
+  // pointsDirty=true in confirm mode; since we immediately sync
+  // lastSentPoints to match below, there's nothing actually unconfirmed.
+  pointsDirty = false;
+  updatePointsInfo();
+  lastSentPoints = clonePoints(points);
+  updateConfirmPointsButton();
 }
 
 function applyOpacity(value) {
@@ -1343,14 +1374,39 @@ function currentSettingsPayload() {
   };
 }
 
-/* Single place that assembles and sends the component's return value. */
-function sendValue() {
+/* Single place that assembles and sends the component's return value.
+ * `points` in the payload is NOT always the live, in-progress `points`
+ * array — see the note on `lastSentPoints` below. Any call site in this
+ * file (slider "change", orbit-controls "end", keyboard shortcuts, clip
+ * plane edits, etc.) can end up calling sendValue() as a side effect of
+ * something unrelated to points, so points must only be included when
+ * we actually intend to report them; otherwise "confirm" mode would leak
+ * unconfirmed points the moment *anything else* triggers a send. */
+function sendValue(forceSyncPoints) {
+  // Strict === true on purpose: sendValue is sometimes passed directly as
+  // an addEventListener callback (bugs like that have happened before —
+  // see the comments at the call sites), which would call this with a
+  // truthy Event object instead of a boolean. Only an explicit `true`
+  // should force-sync points.
+  const syncPoints = forceSyncPoints === true || pointSubmitMode !== "confirm";
+  console.log(
+    `[streamlit_3d_viewer] sendValue() mode=${pointSubmitMode} forceSyncPoints=${!!forceSyncPoints} ` +
+    `syncPoints=${syncPoints} pointsSent=${syncPoints ? points.length : lastSentPoints.length}`
+  );
+  if (syncPoints) lastSentPoints = clonePoints(points);
   stSetValue({
-    points,
+    points: lastSentPoints,
     clip_plane: currentClipPlanePayload(),
     cross_section: showCrossSection ? lastCrossSectionResult : null,
     settings: currentSettingsPayload(),
   });
+}
+
+function clonePoints(arr) {
+  return arr.map((p) => ({
+    point: Array.isArray(p.point) ? p.point.slice() : p.point,
+    uv: Array.isArray(p.uv) ? p.uv.slice() : p.uv,
+  }));
 }
 
 /* Call this instead of sendValue() after any change to the `points` array
@@ -1358,8 +1414,13 @@ function sendValue() {
  * — sends right away, triggering a Streamlit rerun. In "confirm" mode it
  * only updates the local UI (points-info text + the "Confirm points"
  * button) and defers the actual stSetValue() until the user clicks
- * "Confirm points" (see btn-confirm-points below). */
+ * "Confirm points" (see btn-confirm-points below) — even if some other,
+ * unrelated control triggers a plain sendValue() in the meantime (e.g.
+ * OrbitControls fires its "end" event on every click, including the
+ * Shift+Click that places a point), lastSentPoints keeps the reported
+ * points frozen at their last-confirmed state. */
 function notifyPointsChanged() {
+  console.log(`[streamlit_3d_viewer] notifyPointsChanged() mode=${pointSubmitMode} points=${points.length}`);
   if (pointSubmitMode === "confirm") {
     pointsDirty = true;
     updatePointsInfo();
@@ -1425,15 +1486,18 @@ azimInput.addEventListener("input", () => {
 // "change" (fires once, on release) rather than "input" (fires continuously
 // while dragging) — reports the final value back to Python without
 // triggering a Streamlit rerun on every intermediate tick of the drag.
-elevInput.addEventListener("change", sendValue);
-azimInput.addEventListener("change", sendValue);
+// Arrow-wrapped for the same reason as controls' "end" listener above:
+// a bare `sendValue` reference here would receive the Event object as
+// `forceSyncPoints` and always force-sync points.
+elevInput.addEventListener("change", () => sendValue());
+azimInput.addEventListener("change", () => sendValue());
 
 opacityInput.addEventListener("input", () => {
   const v = parseInt(opacityInput.value, 10) / 100;
   lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
   applyOpacity(v);
 });
-opacityInput.addEventListener("change", sendValue);
+opacityInput.addEventListener("change", () => sendValue());
 
 const brightInput = document.getElementById("bright");
 const lblBright = document.getElementById("lbl-bright");
@@ -1441,7 +1505,7 @@ brightInput.addEventListener("input", () => {
   lblBright.textContent = `Brightness: ${brightInput.value}%`;
   renderer.toneMappingExposure = parseInt(brightInput.value, 10) / 100;
 });
-brightInput.addEventListener("change", sendValue);
+brightInput.addEventListener("change", () => sendValue());
 
 const markerSizeInput = document.getElementById("marker-size");
 const lblMarkerSize = document.getElementById("lbl-marker-size");
@@ -1449,7 +1513,7 @@ markerSizeInput.addEventListener("input", () => {
   lblMarkerSize.textContent = `Point size: ${markerSizeInput.value}%`;
   setMarkerScale(parseInt(markerSizeInput.value, 10) / 100);
 });
-markerSizeInput.addEventListener("change", sendValue);
+markerSizeInput.addEventListener("change", () => sendValue());
 
 // Orbiting/panning/zooming the camera with the mouse doesn't touch the
 // elevation/azimuth sliders' own "change" event, so report separately
@@ -1488,7 +1552,7 @@ document.getElementById("btn-clear").addEventListener("click", clearPoints);
 // Python in a single explicit rerun, instead of one rerun per click.
 document.getElementById("btn-confirm-points").addEventListener("click", () => {
   if (pointSubmitMode !== "confirm") return;
-  sendValue();
+  sendValue(true); // force-sync: send the live `points`, not the frozen lastSentPoints
   pointsDirty = false;
   updatePointsInfo();
   updateConfirmPointsButton();
@@ -1724,7 +1788,12 @@ function updatePointsInfo() {
 }
 
 /* ---------- Render event from Streamlit ---------- */
+let loggedInitialArgs = false;
 function handleRender(args) {
+  if (!loggedInitialArgs) {
+    loggedInitialArgs = true;
+    console.log("[streamlit_3d_viewer] first render args.point_submit_mode =", args.point_submit_mode);
+  }
   if (args.background_color) {
     scene.background = new THREE.Color(args.background_color);
   }
@@ -1785,12 +1854,15 @@ function handleRender(args) {
     (args.point_submit_mode === "immediate" || args.point_submit_mode === "confirm")
     && args.point_submit_mode !== pointSubmitMode
   ) {
+    console.log(
+      `[streamlit_3d_viewer] point_submit_mode changing: ${pointSubmitMode} -> ${args.point_submit_mode}`
+    );
     pointSubmitMode = args.point_submit_mode;
     // Switching *into* immediate mode flushes anything still pending so
     // it isn't silently lost; switching *into* confirm mode just starts
     // deferring from here on (nothing to flush yet).
     if (pointSubmitMode === "immediate" && pointsDirty) {
-      sendValue();
+      sendValue(true);
       pointsDirty = false;
     }
     updatePointsInfo();
