@@ -18,6 +18,39 @@ from streamlit_3d_viewer.converter import convert
 st.set_page_config(page_title="3D scan viewer", layout="wide")
 st.title("3D scan viewer")
 
+
+def _reproduce_snippet(settings, clip_plane, points):
+    """Turn the component's returned `settings` (+ `clip_plane` + `points`)
+    into a ready-to-paste `show_3d_viewer(...)` call that reproduces
+    exactly what's currently on screen."""
+    lines = ["show_3d_viewer(", "    report.output_path,"]
+    for py_key in (
+        "background_color",
+        "opacity",
+        "brightness",
+        "marker_size",
+        "camera_elevation",
+        "camera_azimuth",
+        "enable_clipping",
+        "clip_gizmo_mode",
+        "show_both_clip_halves",
+        "show_cross_section",
+        "unit_scale",
+    ):
+        if py_key in settings:
+            lines.append(f"    {py_key}={settings[py_key]!r},")
+    if clip_plane is not None:
+        pos = [round(v, 4) for v in clip_plane["position"]]
+        nrm = [round(v, 4) for v in clip_plane["normal"]]
+        lines.append(f"    clip_plane_position={pos!r},")
+        lines.append(f"    clip_plane_normal={nrm!r},")
+    if points:
+        pts_repr = [{"point": p["point"], "uv": p["uv"]} for p in points]
+        lines.append(f"    initial_points={pts_repr!r},")
+    lines.append(")")
+    return "\n".join(lines)
+
+
 if "report" not in st.session_state:
     st.session_state.report = None
 
@@ -59,6 +92,21 @@ with st.sidebar:
     # its own opacity slider right next to the scan; keeping a second one
     # here would just be a duplicate control that goes out of sync.
 
+    show_controls = st.checkbox(
+        "Show controls",
+        value=True,
+        help=(
+            "Turn off to display only the bare 3D scan (no sliders, "
+            "buttons, checkboxes, or cutting-plane handle). Mouse "
+            "orbit/zoom/pan and Shift+Click to place a point still work."
+        ),
+    )
+
+    with st.expander("Initial camera / view"):
+        camera_elevation = st.slider("Initial elevation (°)", 1, 179, 60)
+        camera_azimuth = st.slider("Initial view angle (°)", 0, 360, 0)
+        brightness = st.slider("Initial brightness (%)", 30, 300, 130) / 100.0
+
     st.header("3. Cutting plane")
     enable_clipping = st.checkbox("Enable cutting plane", value=False)
     clip_plane_position = None
@@ -90,6 +138,9 @@ with st.sidebar:
 
         show_both_clip_halves = st.checkbox("Show both halves", value=False)
         show_cross_section = st.checkbox("Show cross-section", value=False)
+        clip_gizmo_mode = st.radio("Gizmo mode", ["translate", "rotate"], horizontal=True)
+    else:
+        clip_gizmo_mode = None
 
 report = st.session_state.report
 
@@ -126,9 +177,14 @@ if report is not None:
         report.output_path,
         background_color=bg_color,
         height=680,
+        show_controls=show_controls,
+        camera_elevation=camera_elevation,
+        camera_azimuth=camera_azimuth,
+        brightness=brightness,
         enable_clipping=enable_clipping,
         clip_plane_position=clip_plane_position,
         clip_plane_normal=clip_plane_normal,
+        clip_gizmo_mode=clip_gizmo_mode,
         show_both_clip_halves=show_both_clip_halves,
         show_cross_section=show_cross_section,
         key="viewer",
@@ -136,6 +192,7 @@ if report is not None:
     points = result["points"]
     clip_plane = result["clip_plane"]
     cross_section = result["cross_section"]
+    settings = result.get("settings", {})
 
     st.subheader("Selected points")
     if points:
@@ -154,6 +211,15 @@ if report is not None:
         st.dataframe(df, width="stretch")
     else:
         st.caption("No points selected yet.")
+
+    with st.expander("🔁 Current settings — reproduce this exact view"):
+        st.caption(
+            "Reflects the sliders/checkboxes/camera angle/cutting plane as "
+            "they currently are on screen (updates once you release a "
+            "slider, toggle a checkbox, or finish dragging/orbiting)."
+        )
+        st.json(settings)
+        st.code(_reproduce_snippet(settings, clip_plane, points), language="python")
 
     if clip_plane is not None:
         st.subheader("Cutting plane")

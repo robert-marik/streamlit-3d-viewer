@@ -143,15 +143,10 @@
     <div id="cross-section-overlay" style="display:none;">
       <div id="cross-section-overlay-label">Cross-section</div>
       <canvas id="cross-section-2d" width="200" height="140"></canvas>
-      <div id="area-unit-ctrl" style="display:flex;gap:10px;align-items:center;font-size:11px;margin:4px 0;">
-        <span>Units:</span>
-        <label><input type="radio" name="area-unit" id="area-unit-m2" value="m2" checked /> m&sup2;</label>
-        <label><input type="radio" name="area-unit" id="area-unit-cm2" value="cm2" /> cm&sup2;</label>
-      </div>
       <table id="cross-section-table" style="display:none;">
         <caption>Cross-section polygons and areas</caption>
         <thead>
-          <tr><th scope="col">Polygon</th><th scope="col">Area</th></tr>
+          <tr><th scope="col">Polygon</th><th scope="col">Area (m&sup2;)</th></tr>
         </thead>
         <tbody id="cross-section-table-body"></tbody>
       </table>
@@ -262,6 +257,29 @@ let markersGroup = new THREE.Group();
 
 let draggedMarkerIndex = -1;
 
+/* Nudge a marker's *visual* position a little toward the camera, away from
+ * the exact surface point it was clicked on. A marker sphere centered
+ * exactly on the surface (i.e. at the raw raycast hit point) has roughly
+ * half its volume embedded inside the model; on scan meshes — which often
+ * have noisy, near-duplicate, or double-walled geometry from photogrammetry
+ * — that's enough for normal z-buffer depth-fighting to make the marker
+ * lose to the very surface it's sitting on and disappear from view, even
+ * though the point was correctly registered (it's still in `points` and
+ * still returned to Python — only the visible sphere vanishes). Offsetting
+ * the *displayed* sphere slightly toward the camera fixes this while the
+ * coordinate actually stored/returned stays the exact clicked point.
+ * Markers placed on the far side of the model later still get correctly
+ * hidden by the near side when you rotate around — this only pulls a
+ * marker off the specific surface it's touching, not off the model. */
+function offsetTowardCamera(point) {
+  const p = new THREE.Vector3(point[0], point[1], point[2]);
+  const dir = camera.position.clone().sub(p);
+  if (dir.lengthSq() < 1e-12) return point; // camera exactly at the point; nothing sane to offset toward
+  dir.normalize();
+  const eps = markerBaseRadius() * 0.6;
+  return [point[0] + dir.x * eps, point[1] + dir.y * eps, point[2] + dir.z * eps];
+}
+
 /* ---------- Cutting-plane state ---------- */
 let clipEnabled = false;
 let showCrossSection = false;
@@ -288,9 +306,46 @@ let threePlaneNegated = new THREE.Plane(); // kept in sync with threePlane, nega
 
 /* Cross-section area table: unitScale = meters per one model unit
  * (set from Python via `unit_scale`, default 1.0 = model already in
- * meters, the glTF convention). areaUnit = which column to display. */
+ * meters, the glTF convention). Areas are always shown in m² — unit
+ * switching was intentionally removed, there is no cm² option. */
 let unitScale = 1.0;
-let areaUnit = "m2";
+
+/* "show_controls" from Python: when false, every on-screen UI element
+ * (sliders, buttons, checkboxes, text hints, and the draggable cutting-
+ * plane gizmo/quad) is hidden, leaving just the bare 3D scan. Mouse
+ * orbit/zoom/pan and Shift+Click to add a point keep working either
+ * way, and an already-configured cutting plane keeps clipping the
+ * geometry — only its visible handle disappears. */
+let controlsVisible = true;
+
+/* Initial camera angles from Python (`camera_elevation`/`camera_azimuth`).
+ * Re-applied only when the value actually changes on a later render (same
+ * convention as the cutting-plane position/normal below), so they don't
+ * fight the user's mouse-orbiting in between Streamlit reruns. */
+let pendingCameraElevation = null;
+let pendingCameraAzimuth = null;
+let lastCameraAnglesKey = null;
+
+/* Initial cutting-plane gizmo mode from Python. */
+let lastClipGizmoModeKey = null;
+
+/* `enable_clipping` / `show_both_clip_halves` / `show_cross_section` are
+ * plain explicit booleans (not None) whenever Python passes them, so —
+ * like `clip_plane_position` / `clip_gizmo_mode` above — we must compare
+ * against the *last value Python actually sent*, not against the
+ * checkbox's current (possibly since-changed-by-the-user) state. Diffing
+ * against current state would force the checkbox back to Python's value
+ * on every unrelated rerun (e.g. clicking to add a point) even when
+ * Python's value never changed — which is exactly what used to make the
+ * "Cutting plane" checkbox in the component impossible to turn on/off by
+ * hand once example_app.py's sidebar checkbox had sent it once. */
+let lastPyEnableClippingKey = undefined;
+let lastPyShowBothHalvesKey = undefined;
+let lastPyShowCrossSectionKey = undefined;
+
+/* Initial placed points from Python (`initial_points`). */
+let lastInitialPointsKey = null;
+let pendingInitialPoints = null;
 
 const wrap = document.getElementById("canvas-wrap");
 const markerTooltip = document.getElementById("marker-tooltip");
@@ -345,6 +400,10 @@ function initScene() {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.addEventListener("change", syncSlidersFromCamera);
+  // Reports the camera's final elevation/azimuth back to Python once an
+  // orbit/pan/zoom interaction ends (mouse-drag doesn't otherwise touch
+  // the elevation/azimuth sliders' own "change" event).
+  controls.addEventListener("end", sendValue);
 
   root = new THREE.Group();
   scene.add(root);
@@ -382,10 +441,13 @@ function initScene() {
         const pointArr = [hit.point.x, hit.point.y, hit.point.z];
         const uvArr = hit.uv ? [hit.uv.x, hit.uv.y] : null;
 
-        // Aktualizace pozice viditelného markeru
-        markersGroup.children[draggedMarkerIndex].position.set(hit.point.x, hit.point.y, hit.point.z);
+        // Aktualizace pozice viditelného markeru (mírně posunuto ke kameře,
+        // aby nezanikl v z-fightingu s povrchem, na kterém právě leží —
+        // viz komentář u offsetTowardCamera)
+        const markerPos = offsetTowardCamera(pointArr);
+        markersGroup.children[draggedMarkerIndex].position.set(markerPos[0], markerPos[1], markerPos[2]);
 
-        // Aktualizace datového pole bodů
+        // Aktualizace datového pole bodů (přesná souřadnice z povrchu)
         points[draggedMarkerIndex] = { point: pointArr, uv: uvArr };
       }
       showMarkerTooltip(draggedMarkerIndex, e.clientX, e.clientY);
@@ -459,7 +521,9 @@ function onModelLoaded(object, sizeKb, formatLabel) {
   root.add(currentObject);
   applyOpacity(currentOpacity);
   fitCameraToObject(currentObject);
+  applyPendingCameraAngles();
   clearPoints();
+  applyPendingInitialPoints();
   reportMeshInfo(currentObject, sizeKb, formatLabel);
   initClipPlaneForModel();
 }
@@ -541,6 +605,43 @@ function fitCameraToObject(obj) {
   camera.updateProjectionMatrix();
   controls.update();
   syncSlidersFromCamera();
+}
+
+/* Applies `pendingCameraElevation`/`pendingCameraAzimuth` (set from
+ * Python via `camera_elevation`/`camera_azimuth`) on top of whatever
+ * elevation/azimuth `fitCameraToObject` (or the sliders) last set, using
+ * the elev/azim <-> camera sliders wiring defined further below. Safe to
+ * call before that wiring exists yet (sliders may not be initialized on
+ * the very first call) or before a model is loaded. */
+function applyPendingCameraAngles() {
+  if (pendingCameraElevation === null && pendingCameraAzimuth === null) return;
+  if (!controls) return;
+  if (pendingCameraElevation !== null) {
+    elevInput.value = pendingCameraElevation;
+    lblElev.textContent = `Elevation: ${elevInput.value}°`;
+  }
+  if (pendingCameraAzimuth !== null) {
+    azimInput.value = pendingCameraAzimuth;
+    lblAzim.textContent = `View angle: ${azimInput.value}°`;
+  }
+  updateCameraFromSliders();
+}
+
+/* Seeds the viewer with points supplied from Python via `initial_points`,
+ * e.g. [{point: [x,y,z], uv: [u,v] | null}, ...]. Called right after
+ * `clearPoints()` on model load, so it doesn't fight the user's own
+ * placed points across unrelated Streamlit reruns (see handleRender's
+ * change-detection for the raw `args.initial_points` value). */
+function applyPendingInitialPoints() {
+  if (!Array.isArray(pendingInitialPoints)) return;
+  pendingInitialPoints.forEach((p) => {
+    if (p && Array.isArray(p.point) && p.point.length === 3) {
+      // Same surface-embedding issue as manually clicked points can apply
+      // here too if the Python-supplied point sits exactly on the mesh —
+      // nudge the visual marker toward the camera (see offsetTowardCamera).
+      addPoint(p.point, Array.isArray(p.uv) ? p.uv : null, offsetTowardCamera(p.point));
+    }
+  });
 }
 
 function applyOpacity(value) {
@@ -733,10 +834,7 @@ function rebuildBothHalvesGroup() {
 function setClipEnabled(enabled) {
   clipEnabled = enabled;
   clipCheckbox.checked = enabled;
-  clipPlaneMesh.visible = enabled;
-  clipPlaneBorder.visible = enabled;
-  transformControls.visible = enabled;
-  transformControls.enabled = enabled;
+  applyClipGizmoVisibility();
   clipModeCtrl.style.display = enabled ? "flex" : "none";
   btnClipFlip.style.display = enabled ? "inline-block" : "none";
   bothHalvesCtrl.style.display = enabled ? "flex" : "none";
@@ -747,6 +845,32 @@ function setClipEnabled(enabled) {
     setShowCrossSection(false);
   }
   setShowBothClipHalves(requestedShowBothClipHalves);
+}
+
+/* The draggable gizmo/quad is only ever visible when clipping is on AND
+ * `show_controls` hasn't hidden the UI — a plane can still be active and
+ * clipping the geometry (via `applyClippingPlanes`) with its handle
+ * hidden, e.g. when Python drives the plane's transform directly. */
+function applyClipGizmoVisibility() {
+  const gizmoVisible = clipEnabled && controlsVisible;
+  clipPlaneMesh.visible = gizmoVisible;
+  clipPlaneBorder.visible = gizmoVisible;
+  transformControls.visible = gizmoVisible;
+  transformControls.enabled = gizmoVisible;
+}
+
+/* Show/hide every on-screen control (sliders, buttons, checkboxes, text
+ * hints) while leaving the 3D canvas, mouse interaction, and any already-
+ * configured cutting plane's clipping effect untouched. */
+function setControlsVisible(visible) {
+  controlsVisible = visible;
+  const display = visible ? "" : "none";
+  document.getElementById("panel").style.display = visible ? "flex" : "none";
+  document.getElementById("clip-panel").style.display = visible ? "flex" : "none";
+  document.getElementById("mesh-info").style.display = display;
+  document.getElementById("points-info").style.display = display;
+  document.getElementById("hint").style.display = display;
+  applyClipGizmoVisibility();
 }
 
 function setShowBothClipHalves(show) {
@@ -1066,8 +1190,7 @@ function polygonAreaInPlane(points3d, planeBasis) {
 function formatArea(nativeArea) {
   if (typeof nativeArea !== "number" || !Number.isFinite(nativeArea)) return null;
   const areaM2 = nativeArea * unitScale * unitScale;
-  const value = areaUnit === "cm2" ? areaM2 * 10000 : areaM2;
-  return `${value.toFixed(4)} ${areaUnit === "cm2" ? "cm\u00B2" : "m\u00B2"}`;
+  return `${areaM2.toFixed(4)} m\u00B2`;
 }
 
 function announceCrossSectionStatus(statusEl, message) {
@@ -1191,12 +1314,34 @@ function updateClipInfo() {
   clipInfoEl.textContent = txt;
 }
 
+/* Full snapshot of every currently-on-screen setting, so Python can read
+ * back exactly what's shown and pass it straight into a later
+ * show_3d_viewer() call to reproduce the same view (see `settings` in
+ * the returned value). Kept in one place so it's easy to keep in sync
+ * with new sliders/checkboxes. */
+function currentSettingsPayload() {
+  return {
+    background_color: scene && scene.background ? `#${scene.background.getHexString()}` : null,
+    opacity: currentOpacity,
+    brightness: renderer ? renderer.toneMappingExposure : null,
+    marker_size: markerScale,
+    camera_elevation: elevInput ? parseFloat(elevInput.value) : null,
+    camera_azimuth: azimInput ? parseFloat(azimInput.value) : null,
+    enable_clipping: clipEnabled,
+    clip_gizmo_mode: transformControls ? transformControls.getMode() : "translate",
+    show_both_clip_halves: showBothClipHalves,
+    show_cross_section: showCrossSection,
+    unit_scale: unitScale,
+  };
+}
+
 /* Single place that assembles and sends the component's return value. */
 function sendValue() {
   stSetValue({
     points,
     clip_plane: currentClipPlanePayload(),
     cross_section: showCrossSection ? lastCrossSectionResult : null,
+    settings: currentSettingsPayload(),
   });
 }
 
@@ -1245,11 +1390,18 @@ azimInput.addEventListener("input", () => {
   lblAzim.textContent = `View angle: ${azimInput.value}°`;
   updateCameraFromSliders();
 });
+// "change" (fires once, on release) rather than "input" (fires continuously
+// while dragging) — reports the final value back to Python without
+// triggering a Streamlit rerun on every intermediate tick of the drag.
+elevInput.addEventListener("change", sendValue);
+azimInput.addEventListener("change", sendValue);
+
 opacityInput.addEventListener("input", () => {
   const v = parseInt(opacityInput.value, 10) / 100;
   lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
   applyOpacity(v);
 });
+opacityInput.addEventListener("change", sendValue);
 
 const brightInput = document.getElementById("bright");
 const lblBright = document.getElementById("lbl-bright");
@@ -1257,6 +1409,7 @@ brightInput.addEventListener("input", () => {
   lblBright.textContent = `Brightness: ${brightInput.value}%`;
   renderer.toneMappingExposure = parseInt(brightInput.value, 10) / 100;
 });
+brightInput.addEventListener("change", sendValue);
 
 const markerSizeInput = document.getElementById("marker-size");
 const lblMarkerSize = document.getElementById("lbl-marker-size");
@@ -1264,6 +1417,12 @@ markerSizeInput.addEventListener("input", () => {
   lblMarkerSize.textContent = `Point size: ${markerSizeInput.value}%`;
   setMarkerScale(parseInt(markerSizeInput.value, 10) / 100);
 });
+markerSizeInput.addEventListener("change", sendValue);
+
+// Orbiting/panning/zooming the camera with the mouse doesn't touch the
+// elevation/azimuth sliders' own "change" event, so report separately
+// once the drag/scroll interaction ends — wired inside initScene(),
+// where `controls` (OrbitControls) actually gets created.
 
 document.getElementById("btn-full").addEventListener("click", () => {
   if (currentObject) fitCameraToObject(currentObject);
@@ -1306,16 +1465,6 @@ const clip2DCtrl = document.getElementById("cross-section-overlay");
 const btnClipExport = document.getElementById("btn-clip-export");
 const clipInfoEl = document.getElementById("clip-info");
 const clipKeysHint = document.getElementById("clip-keys-hint");
-const areaUnitM2Radio = document.getElementById("area-unit-m2");
-const areaUnitCm2Radio = document.getElementById("area-unit-cm2");
-
-function onAreaUnitChange() {
-  areaUnit = areaUnitCm2Radio.checked ? "cm2" : "m2";
-  // Re-render from the cached payload — no need to recompute the slice.
-  renderCrossSectionTable(lastCrossSectionResult);
-}
-areaUnitM2Radio.addEventListener("change", onAreaUnitChange);
-areaUnitCm2Radio.addEventListener("change", onAreaUnitChange);
 
 clipCheckbox.addEventListener("change", () => {
   setClipEnabled(clipCheckbox.checked);
@@ -1326,12 +1475,14 @@ btnClipMove.addEventListener("click", () => {
   transformControls.setMode("translate");
   btnClipMove.classList.add("active");
   btnClipRotate.classList.remove("active");
+  sendValue();
 });
 
 btnClipRotate.addEventListener("click", () => {
   transformControls.setMode("rotate");
   btnClipRotate.classList.add("active");
   btnClipMove.classList.remove("active");
+  sendValue();
 });
 
 btnClipFlip.addEventListener("click", () => {
@@ -1432,6 +1583,7 @@ wrap.addEventListener("keydown", (e) => {
         transformControls.setMode(next);
         btnClipMove.classList.toggle("active", next === "translate");
         btnClipRotate.classList.toggle("active", next === "rotate");
+        sendValue();
       }
       e.preventDefault();
       break;
@@ -1471,12 +1623,13 @@ function onModelClick(e) {
   if (intersects.length === 0) return;
   const hit = intersects[0];
   const uv = hit.uv ? [hit.uv.x, hit.uv.y] : null;
-  addPoint([hit.point.x, hit.point.y, hit.point.z], uv);
+  const point = [hit.point.x, hit.point.y, hit.point.z];
+  addPoint(point, uv, offsetTowardCamera(point));
 }
 
-function addPoint(point, uv) {
+function addPoint(point, uv, markerPoint) {
   points.push({ point, uv });
-  if (point) addMarker(point);
+  if (point) addMarker(markerPoint || point);
   updatePointsInfo();
   sendValue();
 }
@@ -1541,13 +1694,15 @@ function handleRender(args) {
     setMarkerScale(args.marker_size);
   }
 
-  if (typeof args.enable_clipping === "boolean" && args.enable_clipping !== clipEnabled) {
+  if (typeof args.enable_clipping === "boolean" && args.enable_clipping !== lastPyEnableClippingKey) {
+    lastPyEnableClippingKey = args.enable_clipping;
     setClipEnabled(args.enable_clipping);
   }
   if (
     typeof args.show_both_clip_halves === "boolean"
-    && args.show_both_clip_halves !== requestedShowBothClipHalves
+    && args.show_both_clip_halves !== lastPyShowBothHalvesKey
   ) {
+    lastPyShowBothHalvesKey = args.show_both_clip_halves;
     setShowBothClipHalves(args.show_both_clip_halves);
   }
   if (args.clip_plane_position || args.clip_plane_normal) {
@@ -1557,12 +1712,53 @@ function handleRender(args) {
       setClipPlaneTransform(args.clip_plane_position, args.clip_plane_normal);
     }
   }
-  if (typeof args.show_cross_section === "boolean" && args.show_cross_section !== showCrossSection) {
+  if (
+    typeof args.show_cross_section === "boolean"
+    && args.show_cross_section !== lastPyShowCrossSectionKey
+  ) {
+    lastPyShowCrossSectionKey = args.show_cross_section;
     setShowCrossSection(args.show_cross_section);
   }
   if (typeof args.unit_scale === "number" && args.unit_scale > 0 && args.unit_scale !== unitScale) {
     unitScale = args.unit_scale;
     if (lastCrossSectionResult) renderCrossSectionTable(lastCrossSectionResult);
+  }
+  if (typeof args.brightness === "number") {
+    const pct = Math.round(args.brightness * 100);
+    brightInput.value = pct;
+    lblBright.textContent = `Brightness: ${pct}%`;
+    renderer.toneMappingExposure = args.brightness;
+  }
+  if (typeof args.show_controls === "boolean" && args.show_controls !== controlsVisible) {
+    setControlsVisible(args.show_controls);
+  }
+  if (args.clip_gizmo_mode === "translate" || args.clip_gizmo_mode === "rotate") {
+    if (args.clip_gizmo_mode !== lastClipGizmoModeKey) {
+      lastClipGizmoModeKey = args.clip_gizmo_mode;
+      transformControls.setMode(args.clip_gizmo_mode);
+      btnClipMove.classList.toggle("active", args.clip_gizmo_mode === "translate");
+      btnClipRotate.classList.toggle("active", args.clip_gizmo_mode === "rotate");
+    }
+  }
+  if (args.camera_elevation != null || args.camera_azimuth != null) {
+    const key = JSON.stringify([args.camera_elevation ?? null, args.camera_azimuth ?? null]);
+    if (key !== lastCameraAnglesKey) {
+      lastCameraAnglesKey = key;
+      pendingCameraElevation = args.camera_elevation ?? null;
+      pendingCameraAzimuth = args.camera_azimuth ?? null;
+      applyPendingCameraAngles();
+    }
+  }
+  if (Array.isArray(args.initial_points)) {
+    const key = JSON.stringify(args.initial_points);
+    if (key !== lastInitialPointsKey) {
+      lastInitialPointsKey = key;
+      pendingInitialPoints = args.initial_points;
+      if (currentObject) applyPendingInitialPoints();
+      // If no model is loaded yet, onModelLoaded() will apply it once
+      // loading finishes (it calls applyPendingInitialPoints() right
+      // after clearPoints()).
+    }
   }
 
   const modelType = args.model_type || "glb";

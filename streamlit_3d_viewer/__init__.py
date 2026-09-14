@@ -39,7 +39,7 @@ def _file_to_data_url(path, mime):
     return f"data:{mime};base64,{b64}"
 
 
-_EMPTY_VALUE = {"points": [], "clip_plane": None, "cross_section": None}
+_EMPTY_VALUE = {"points": [], "clip_plane": None, "cross_section": None, "settings": {}}
 
 
 def show_3d_viewer(
@@ -50,12 +50,18 @@ def show_3d_viewer(
     background_color="#1e1e1e",
     opacity=1.0,
     marker_size=1.0,
+    brightness=1.3,
+    camera_elevation=None,
+    camera_azimuth=None,
     enable_clipping=None,
     clip_plane_position=None,
     clip_plane_normal=None,
+    clip_gizmo_mode=None,
     show_both_clip_halves=None,
     show_cross_section=False,
     unit_scale=1.0,
+    show_controls=True,
+    initial_points=None,
     key=None,
 ):
     """
@@ -103,6 +109,20 @@ def show_3d_viewer(
         has its own "Point size" slider, which is the single source of
         truth once rendered and also lets the user resize markers
         already placed.
+    brightness : float
+        Initial rendering exposure (1.0 = 100%, the "Brightness" slider
+        default is 1.3 = 130%). Only the starting value — the slider is
+        the source of truth afterwards.
+    camera_elevation : float | None
+        Initial camera elevation angle in degrees (1-179, matches the
+        "Elevation" slider). ``None`` (default) leaves the automatic
+        "fit to model" elevation in place. Like `clip_plane_position`,
+        this is re-applied only when you pass a *new* value on a later
+        rerun, so it won't fight the user's mouse-orbiting in between.
+    camera_azimuth : float | None
+        Initial camera azimuth / view angle in degrees (0-360, matches
+        the "View angle" slider). Same re-apply-on-change behavior as
+        `camera_elevation`.
     enable_clipping : bool | None
         Show the cutting-plane widget (a draggable/rotatable gizmo) and
         clip the model against it. Can also be turned on/off with the
@@ -123,6 +143,10 @@ def show_3d_viewer(
         (horizontal, like a water level) when not given.
         Follows the same "re-applied only when the value changes"
         convention as `clip_plane_position`.
+    clip_gizmo_mode : str | None
+        Initial mode of the cutting-plane gizmo: ``"translate"`` (the
+        "Move" button, default) or ``"rotate"``. Re-applied only when
+        the value changes, same convention as `clip_plane_position`.
     show_both_clip_halves : bool
         Keep both halves of the model visible while the cutting plane is
         enabled. If ``False`` (default), one half is clipped away.
@@ -139,16 +163,36 @@ def show_3d_viewer(
         meters, so the default ``1.0`` is correct for most converted
         scans. If your source OBJ/GLB was authored in millimeters, pass
         ``0.001``; for centimeters, ``0.01``. This only affects the
-        cross-section area table's m^2/cm^2 display (a UI toggle next to
-        the table lets the user pick which of the two to show) — it does
-        not rescale the geometry itself.
+        cross-section area table's m^2 display — it does not rescale
+        the geometry itself. Areas are always shown in square meters;
+        there is no unit switcher in the UI.
+    show_controls : bool
+        If ``True`` (default), all on-screen UI is shown: the view/
+        opacity/brightness/point-size sliders, the "Full scene" /
+        "Zoom to selected points" / "Clear points" buttons, the
+        cutting-plane checkbox/buttons/keyboard-shortcut hint, the
+        mesh-info and points-info text, and the draggable cutting-plane
+        gizmo (the yellow handle/quad). If ``False``, all of that is
+        hidden and only the bare 3D scan is shown — mouse orbit/zoom/
+        pan and Shift+Click to place a point still work, and a cutting
+        plane set via `enable_clipping` / `clip_plane_position` /
+        `clip_plane_normal` still clips the geometry, just without a
+        visible handle to drag. Useful for embedding a clean, read-only
+        viewer.
+    initial_points : list[dict] | None
+        Points to pre-populate the viewer with, in the same shape as
+        the `points` returned by this function, e.g.
+        ``[{"point": [x, y, z], "uv": [u, v] or None}, ...]``.
+        Re-applied only when the value changes (e.g. a new list
+        object/content), so it won't wipe out points the user has
+        since added or moved with the mouse.
     key : str | None
         Streamlit component key.
 
     Returns
     -------
     dict
-        ``{"points": [...], "clip_plane": {...} | None, "cross_section": {...} | None}``
+        ``{"points": [...], "clip_plane": {...} | None, "cross_section": {...} | None, "settings": {...}}``
 
         - ``points``: list of clicked points, e.g.
           ``[{"point": [x, y, z], "uv": [u, v]}, ...]``.
@@ -162,20 +206,39 @@ def show_3d_viewer(
           ``points_2d`` are the same points flattened into the plane's own
           in-plane (u, v) axes (see ``plane_basis``), handy for exporting
           a flat cut profile.
+        - ``settings``: a live snapshot of every other on-screen control,
+          in the same shape the matching `show_3d_viewer()` keyword
+          arguments expect — ``{"background_color": "#1e1e1e", "opacity":
+          1.0, "brightness": 1.3, "marker_size": 1.0, "camera_elevation":
+          60.0, "camera_azimuth": 0.0, "enable_clipping": False,
+          "clip_gizmo_mode": "translate", "show_both_clip_halves": False,
+          "show_cross_section": False, "unit_scale": 1.0}``. It updates
+          whenever the user releases a slider, toggles a checkbox, or
+          finishes dragging/orbiting — not on every intermediate tick —
+          so at any point you can feed it (together with ``clip_plane``
+          and ``points``) straight back into `show_3d_viewer()` to
+          reproduce exactly what's currently on screen; see "Reproducing
+          the current view" in the README.
     """
     kwargs = dict(
         opacity=float(opacity),
         marker_size=float(marker_size),
+        brightness=float(brightness),
         background_color=background_color,
+        camera_elevation=(float(camera_elevation) if camera_elevation is not None else None),
+        camera_azimuth=(float(camera_azimuth) if camera_azimuth is not None else None),
         clip_plane_position=(
             [float(v) for v in clip_plane_position] if clip_plane_position is not None else None
         ),
         clip_plane_normal=(
             [float(v) for v in clip_plane_normal] if clip_plane_normal is not None else None
         ),
+        clip_gizmo_mode=clip_gizmo_mode,
         show_both_clip_halves=bool(show_both_clip_halves),
         show_cross_section=bool(show_cross_section),
         unit_scale=float(unit_scale),
+        show_controls=bool(show_controls),
+        initial_points=initial_points,
         default=_EMPTY_VALUE,
         key=key,
     )
