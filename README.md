@@ -336,6 +336,27 @@ this exact view" expander below the viewer, which shows the raw
   `unit_scale` to `show_3d_viewer()` (meters per one model unit; default
   `1.0` = model already in meters) if your scan was authored in mm/cm,
   so the displayed m² values are correct.
+- **The "Cutting plane" / "Show both halves" / "Show cross-section"
+  checkboxes can now actually be toggled by hand in the viewer.** They
+  used to snap back to whatever the Python side last passed on *every*
+  rerun (e.g. adding an unrelated point), because the frontend compared
+  the incoming value against its own current state instead of against
+  the last value Python had actually sent. Fixed to use the latter, the
+  same "only re-apply on an actual change" convention already used for
+  `clip_plane_position`/`clip_gizmo_mode`/etc. — a fixed Python-side
+  `True`/`False` now only forces the checkbox once, on the rerun where
+  it changes, instead of fighting the user on every subsequent rerun.
+- **Shift+click-added points that visually vanish.** A marker used to be
+  centered exactly on the clicked surface point, so roughly half of its
+  sphere sat embedded inside the model; on scan meshes with noisy or
+  near-duplicate geometry (common with photogrammetry), ordinary z-buffer
+  depth-fighting could make the marker lose to the very surface it was
+  sitting on and disappear — even though the point was correctly added
+  to `points` and returned to Python. The *displayed* sphere is now
+  nudged slightly toward the camera off the surface it was placed on; the
+  coordinate actually returned to Python is unaffected (still the exact
+  clicked point), and markers on the model's far side are still properly
+  hidden when you rotate around.
 
 ## Notes / limitations
 
