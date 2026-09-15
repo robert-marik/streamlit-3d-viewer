@@ -40,6 +40,19 @@
     border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; font-weight: 600;
   }
   button:hover { background: #dfe2fb; }
+  /* Prominent red state while there are locally-placed points not yet
+     sent to Python (point_submit_mode="confirm"), so it's unmistakable
+     that action is needed. */
+  button#btn-confirm-points.dirty {
+    background: #e0392b; color: #fff; border-color: #a8291f;
+    animation: stv-pulse 1.4s ease-in-out infinite;
+  }
+  button#btn-confirm-points.dirty:hover { background: #c72e22; }
+  @keyframes stv-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(224, 57, 43, 0.55); }
+    50% { box-shadow: 0 0 0 6px rgba(224, 57, 43, 0); }
+  }
+  #points-info.dirty { color: #e0392b; font-weight: 700; }
 
   #clip-panel {
     display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
@@ -445,6 +458,15 @@ function initScene() {
         draggedMarkerIndex = markersGroup.children.indexOf(intersects[0].object);
         if (draggedMarkerIndex !== -1) {
           controls.enabled = false; // Vypne rotaci kamery během posunu bodu
+          // Pointer capture: keeps THIS element receiving pointermove/
+          // pointerup for this pointer even if the cursor leaves the
+          // canvas mid-drag (e.g. released over the panel below). Without
+          // this, a release outside the canvas never fires "pointerup"
+          // here, draggedMarkerIndex stays set, and controls.enabled stays
+          // false forever — silently breaking BOTH orbit-drag and
+          // mouse-wheel zoom for the rest of the session (OrbitControls'
+          // own wheel handler bails out early whenever enabled is false).
+          try { renderer.domElement.setPointerCapture(e.pointerId); } catch (err) { /* unsupported: ignore, fallback below still applies */ }
         }
       }
     }
@@ -484,11 +506,22 @@ function initScene() {
     }
   });
 
+  // Single place that ends a marker drag, however it ends (normal
+  // pointerup, pointercancel, or the window-blur/lost-pointer-capture
+  // fallback below) — so controls.enabled is always reliably restored.
+  function endMarkerDrag(e) {
+    if (draggedMarkerIndex === -1) return;
+    draggedMarkerIndex = -1;
+    controls.enabled = true; // Znovu zapne rotaci kamery
+    if (e && e.pointerId != null) {
+      try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (err) { /* already released/unsupported: ignore */ }
+    }
+    notifyPointsChanged(); // Odeslání aktualizovaných bodů (respektuje point_submit_mode)
+  }
+
   renderer.domElement.addEventListener("pointerup", (e) => {
     if (draggedMarkerIndex !== -1) {
-      draggedMarkerIndex = -1;
-      controls.enabled = true; // Znovu zapne rotaci kamery
-      notifyPointsChanged(); // Odeslání aktualizovaných bodů (respektuje point_submit_mode)
+      endMarkerDrag(e);
     } else if (pointerDown) {
       const dist = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
       // Bod se přidá pouze v případě, že je stisknut Shift
@@ -500,6 +533,13 @@ function initScene() {
   });
 
   renderer.domElement.addEventListener("pointerleave", hideMarkerTooltip);
+  // Belt-and-braces alongside pointer capture above: pointercancel can
+  // fire instead of pointerup in some edge cases (e.g. the OS/browser
+  // interrupts the gesture), and losing window focus mid-drag (alt-tab)
+  // fires neither. Either way, a marker drag must not permanently disable
+  // orbit/zoom — always end it.
+  renderer.domElement.addEventListener("pointercancel", endMarkerDrag);
+  window.addEventListener("blur", () => endMarkerDrag(null));
 }
 
 function onResize() {
@@ -621,6 +661,18 @@ function fitCameraToObject(obj) {
   camera.position.copy(center).add(new THREE.Vector3(0, maxDim * 0.4, dist));
   camera.near = maxDim / 100;
   camera.far = maxDim * 100;
+  // Without a minDistance, scrolling the mouse wheel to zoom in has no
+  // lower bound: the camera can dolly all the way to (or through)
+  // controls.target. At that point the camera-to-target offset vector
+  // shrinks toward zero length, which makes syncSlidersFromCamera()'s
+  // spherical-coordinate math degenerate (phi collapses to 0), snapping
+  // the Elevation slider to its minimum (browsers clamp an out-of-range
+  // .value assignment) — and the near-zero distance also pushes the
+  // model behind the near-clipping plane, so the scan appears to vanish.
+  // Keeping the camera at least a small fraction of the model's size
+  // away from the target prevents both.
+  controls.minDistance = maxDim * 0.05;
+  controls.maxDistance = dist * 25; // matching sane cap so zooming out can't fly off to infinity either
   camera.updateProjectionMatrix();
   controls.update();
   syncSlidersFromCamera();
@@ -1424,7 +1476,8 @@ function updateConfirmPointsButton() {
   if (!btn) return;
   btn.style.display = pointSubmitMode === "confirm" ? "inline-block" : "none";
   btn.disabled = !pointsDirty;
-  btn.textContent = pointsDirty ? "Confirm points*" : "Confirm points";
+  btn.textContent = pointsDirty ? "Confirm points ●" : "Confirm points";
+  btn.classList.toggle("dirty", pointsDirty);
 }
 
 /* ---------- Sliders <-> Camera ---------- */
@@ -1439,8 +1492,14 @@ let syncingFromCamera = false;
 
 function syncSlidersFromCamera() {
   if (!controls) return;
-  syncingFromCamera = true;
   const offset = new THREE.Vector3().subVectors(camera.position, controls.target);
+  // Guard against the degenerate case where the camera coincides (or
+  // nearly coincides) with controls.target: THREE.Spherical's math
+  // collapses phi to 0 for a zero-length vector, which would otherwise
+  // snap the Elevation slider to its minimum. Simply leave the sliders
+  // at their last valid values rather than writing a bogus one.
+  if (offset.lengthSq() < 1e-8) return;
+  syncingFromCamera = true;
   const spherical = new THREE.Spherical().setFromVector3(offset);
   const elevDeg = THREE.MathUtils.radToDeg(spherical.phi);
   const azimDeg = (THREE.MathUtils.radToDeg(spherical.theta) + 360) % 360;
@@ -1765,15 +1824,18 @@ function clearPoints() {
 
 function updatePointsInfo() {
   let text;
+  const isDirty = pointSubmitMode === "confirm" && pointsDirty;
   if (points.length === 0) {
     text = "Shift + Click on the model to add a point.";
   } else {
     text = `${points.length} point(s) selected`;
-    if (pointSubmitMode === "confirm" && pointsDirty) {
-      text += " (not yet confirmed)";
+    if (isDirty) {
+      text += " — not yet confirmed!";
     }
   }
-  document.getElementById("points-info").textContent = text;
+  const infoEl = document.getElementById("points-info");
+  infoEl.textContent = text;
+  infoEl.classList.toggle("dirty", isDirty);
 }
 
 /* ---------- Render event from Streamlit ---------- */

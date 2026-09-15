@@ -119,6 +119,7 @@ streamlit_3d_viewer/
                             #   (fully offline, no CDN needed)
 example_app.py                  # single-file upload demo: OBJ -> GLB conversion ("Home" page)
 example_obj_texture_demo.py     # direct OBJ+JPG rendering demo (no conversion step)
+simple_app.py                   # minimal demo: upload OBJ+JPG or GLB, toggle behavior flags
 demo_assets/
 └── obj_texture_demo/            # bundled sample OBJ+JPG for the demo above
 pages/
@@ -135,6 +136,18 @@ streamlit run example_app.py
 ```
 
 Uploads an OBJ + texture, converts, previews, shows selected points.
+
+### Minimal demo (no conversion, all flags exposed)
+
+```bash
+streamlit run simple_app.py
+```
+
+The bare-bones version: upload a GLB/glTF or an OBJ (+ optional texture)
+and it goes straight to `show_3d_viewer()` — no `convert()` step at all.
+Checkboxes in the sidebar let you flip `show_controls`,
+`point_submit_mode` ("immediate" vs. "confirm"), `enable_clipping`, and
+`show_cross_section` to try each one out quickly on your own files.
 
 ### Direct OBJ + JPG demo (no conversion)
 
