@@ -64,6 +64,7 @@ def show_3d_viewer(
     clip_plane_normal=None,
     clip_gizmo_mode=None,
     show_both_clip_halves=None,
+    separate_clip_halves=None,
     show_cross_section=False,
     unit_scale=1.0,
     show_controls=True,
@@ -158,6 +159,20 @@ def show_3d_viewer(
         Keep both halves of the model visible while the cutting plane is
         enabled. If ``False`` (default), one half is clipped away.
         If ``None`` (default), the frontend checkbox controls this state.
+    separate_clip_halves : bool | None
+        Only relevant when both halves are shown (see
+        `show_both_clip_halves`): nudges the second half apart along the
+        cutting plane's normal, by a small distance scaled to the
+        model's own size, so the cut faces are easier to read. Because
+        the offset follows the plane's current normal, tilting/rotating
+        the plane makes the two halves visibly slide relative to each
+        other — useful for inspecting the cut, but not always wanted.
+        Pass ``False`` to keep both halves exactly in their true
+        position (only the cut geometry differs between them, no
+        relative sliding while rotating the plane). Also toggleable via
+        the "Separate halves" checkbox next to "Show both halves". If
+        ``None`` (default), the frontend checkbox controls this state
+        (starts enabled).
     show_cross_section : bool | None
         Compute and draw the polygon(s) where the cutting plane
         intersects the model, and include them in the returned value.
@@ -241,7 +256,8 @@ def show_3d_viewer(
           1.0, "brightness": 1.3, "marker_size": 1.0, "camera_elevation":
           60.0, "camera_azimuth": 0.0, "enable_clipping": False,
           "clip_gizmo_mode": "translate", "show_both_clip_halves": False,
-          "show_cross_section": False, "unit_scale": 1.0}``. It updates
+          "separate_clip_halves": True, "show_cross_section": False,
+          "unit_scale": 1.0}``. It updates
           whenever the user releases a slider, toggles a checkbox, or
           finishes dragging/orbiting — not on every intermediate tick —
           so at any point you can feed it (together with ``clip_plane``
@@ -283,6 +299,8 @@ def show_3d_viewer(
         kwargs["show_cross_section"] = bool(show_cross_section)
     if show_both_clip_halves is not None:
         kwargs["show_both_clip_halves"] = bool(show_both_clip_halves)
+    if separate_clip_halves is not None:
+        kwargs["separate_clip_halves"] = bool(separate_clip_halves)
 
     if obj_path is not None:
         obj_path = Path(obj_path)

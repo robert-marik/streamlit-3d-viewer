@@ -221,6 +221,7 @@ Every control in the viewer accepts an initial value as a
 | `clip_plane_normal` | `[nx, ny, nz]` of the cutting plane | `None` = `[0, 1, 0]` (horizontal) |
 | `clip_gizmo_mode` | Gizmo "Move" / "Rotate" toggle | `None` = `"translate"` |
 | `show_both_clip_halves` | "Show both halves" checkbox | `None` = frontend keeps its state |
+| `separate_clip_halves` | "Separate halves" checkbox — nudges the two halves apart along the plane normal (see [below](#separating-vs-keeping-the-cut-halves-in-place)) | `None` = frontend keeps its state (starts on) |
 | `show_cross_section` | "Show cross-section" checkbox | `False` |
 | `unit_scale` | Meters per one model unit (for the m² area table) | `1.0` |
 | `initial_points` | Points pre-placed on the model | `None` |
@@ -241,6 +242,7 @@ points = show_3d_viewer(
     clip_plane_normal=[0, 1, 0],
     clip_gizmo_mode="rotate",
     show_both_clip_halves=True,
+    separate_clip_halves=False,  # keep both halves exactly in place while rotating the plane
     show_cross_section=True,
     unit_scale=0.001,   # model authored in millimeters
     initial_points=[{"point": [0.1, 0.2, 0.0], "uv": None}],
@@ -414,6 +416,41 @@ this exact view" expander below the viewer, which shows the raw
   coordinate actually returned to Python is unaffected (still the exact
   clicked point), and markers on the model's far side are still properly
   hidden when you rotate around.
+
+### Separating vs. keeping the cut halves in place
+
+With "Show both halves" on, the second half is nudged apart from the
+first along the cutting plane's **current normal**, by a small distance
+scaled to the model's size, purely so the two cut faces are easier to
+tell apart visually. Because the offset direction always follows the
+normal, tilting/rotating the plane makes the two halves visibly slide
+relative to each other — which is exactly what you want while
+inspecting a cut, but can be disorienting if you're mainly using the
+plane to pick an orientation and don't want anything to appear to move
+underneath it.
+
+A **"Separate halves"** checkbox next to "Show both halves" controls
+this independently:
+
+- **Checked (default):** the nudge-apart behavior described above.
+- **Unchecked:** both halves stay exactly in their true position —
+  only the cut geometry itself differs between them, nothing shifts as
+  you rotate the plane.
+
+From Python:
+
+```python
+show_3d_viewer(
+    "scan.glb",
+    enable_clipping=True,
+    show_both_clip_halves=True,
+    separate_clip_halves=False,  # halves stay put; only pass True/False
+                                  # to override the checkbox from Python
+)
+```
+
+Like the other cutting-plane toggles, leave it as `None` (the default)
+to let the on-screen checkbox control it.
 
 ## Notes / limitations
 

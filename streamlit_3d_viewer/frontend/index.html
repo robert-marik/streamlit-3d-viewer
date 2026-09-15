@@ -212,6 +212,10 @@
     <button id="btn-clip-flip" type="button" style="display:none;">Flip side</button>
     <div class="ctrl" id="clip-both-halves-ctrl" style="display:none;">
       <label><input type="checkbox" id="clip-both-halves" /> Show both halves</label>
+      <label style="margin-top:4px;">
+        <input type="checkbox" id="clip-explode-halves" checked />
+        Separate halves
+      </label>
     </div>
     <div class="ctrl" id="clip-cross-section-ctrl" style="display:none;">
       <label><input type="checkbox" id="clip-cross-section" /> Show cross-section</label>
@@ -312,6 +316,14 @@ let clipEnabled = false;
 let showCrossSection = false;
 let showBothClipHalves = false;
 let requestedShowBothClipHalves = false;
+// Whether the second half gets nudged apart along the plane normal (see
+// bothHalvesGap()) for readability, or stays exactly coincident with the
+// first half. The offset direction follows the plane's current normal,
+// so with this on, tilting the plane makes the two halves visibly slide
+// relative to each other — desirable for inspecting the cut, but
+// sometimes distracting. Off = both halves rendered in their true,
+// un-nudged position; only the actual cut geometry differs between them.
+let bothHalvesExplode = true;
 let clipPlaneObj = null;      // Object3D: position/quaternion define the plane (local +Z = normal)
 let clipPlaneMesh = null;     // translucent visual quad
 let clipPlaneBorder = null;   // wireframe border of the quad
@@ -368,6 +380,7 @@ let lastClipGizmoModeKey = null;
  * hand once example_app.py's sidebar checkbox had sent it once. */
 let lastPyEnableClippingKey = undefined;
 let lastPyShowBothHalvesKey = undefined;
+let lastPySeparateHalvesKey = undefined;
 let lastPyShowCrossSectionKey = undefined;
 
 /* Initial placed points from Python (`initial_points`). */
@@ -810,9 +823,10 @@ function updateClipPlaneFromObject() {
 }
 
 /* How far apart to nudge the two halves so the cut faces are readable,
- * scaled to the model's own size. */
+ * scaled to the model's own size. Returns 0 (no offset at all) when the
+ * "Separate halves" toggle is off. */
 function bothHalvesGap() {
-  if (!currentObject) return 0;
+  if (!currentObject || !bothHalvesExplode) return 0;
   const box = new THREE.Box3().setFromObject(currentObject);
   const size = box.getSize(new THREE.Vector3());
   return (Math.max(size.x, size.y, size.z) || 1) * 0.05;
@@ -962,12 +976,23 @@ function setShowBothClipHalves(show) {
   requestedShowBothClipHalves = !!show;
   showBothClipHalves = clipEnabled ? requestedShowBothClipHalves : false;
   bothHalvesCheckbox.checked = showBothClipHalves;
+  explodeHalvesCheckbox.disabled = !showBothClipHalves;
   // Cross-section stays available regardless of both-halves: it's computed
   // from the full, unclipped geometry either way, so the cut outline/fill
   // and the area table keep working when both halves are visible.
   applyClippingPlanes();
   if (clipEnabled && showCrossSection) recomputeCrossSection();
   updateClipInfo();
+}
+
+/* Toggles whether "Show both halves" nudges the second half apart along
+ * the plane normal (see the comment on `bothHalvesExplode` above), or
+ * keeps it exactly in place. Cheap: no geometry rebuild needed, only the
+ * group's position changes. */
+function setBothHalvesExplode(explode) {
+  bothHalvesExplode = !!explode;
+  explodeHalvesCheckbox.checked = bothHalvesExplode;
+  updateBothHalvesOffset();
 }
 
 function setShowCrossSection(show) {
@@ -1415,6 +1440,7 @@ function currentSettingsPayload() {
     enable_clipping: clipEnabled,
     clip_gizmo_mode: transformControls ? transformControls.getMode() : "translate",
     show_both_clip_halves: showBothClipHalves,
+    separate_clip_halves: bothHalvesExplode,
     show_cross_section: showCrossSection,
     unit_scale: unitScale,
   };
@@ -1614,6 +1640,7 @@ const btnClipRotate = document.getElementById("btn-clip-rotate");
 const btnClipFlip = document.getElementById("btn-clip-flip");
 const bothHalvesCtrl = document.getElementById("clip-both-halves-ctrl");
 const bothHalvesCheckbox = document.getElementById("clip-both-halves");
+const explodeHalvesCheckbox = document.getElementById("clip-explode-halves");
 const crossSectionCtrl = document.getElementById("clip-cross-section-ctrl");
 const crossSectionCheckbox = document.getElementById("clip-cross-section");
 const clip2DCtrl = document.getElementById("cross-section-overlay");
@@ -1650,6 +1677,11 @@ btnClipFlip.addEventListener("click", () => {
 
 bothHalvesCheckbox.addEventListener("change", () => {
   setShowBothClipHalves(bothHalvesCheckbox.checked);
+  sendValue();
+});
+
+explodeHalvesCheckbox.addEventListener("change", () => {
+  setBothHalvesExplode(explodeHalvesCheckbox.checked);
   sendValue();
 });
 
@@ -1868,6 +1900,13 @@ function handleRender(args) {
   ) {
     lastPyShowBothHalvesKey = args.show_both_clip_halves;
     setShowBothClipHalves(args.show_both_clip_halves);
+  }
+  if (
+    typeof args.separate_clip_halves === "boolean"
+    && args.separate_clip_halves !== lastPySeparateHalvesKey
+  ) {
+    lastPySeparateHalvesKey = args.separate_clip_halves;
+    setBothHalvesExplode(args.separate_clip_halves);
   }
   if (args.clip_plane_position || args.clip_plane_normal) {
     const key = JSON.stringify([args.clip_plane_position || null, args.clip_plane_normal || null]);
