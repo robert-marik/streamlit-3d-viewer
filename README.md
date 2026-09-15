@@ -43,6 +43,11 @@ clean, read-only 3D view.
   (frames the camera so all currently selected points are visible).
 - Click on the model to add a point (3D position + UV); a red marker is
   shown at that spot. Points are returned to Python as a list.
+- **`point_submit_mode`**: choose whether points are sent to Python (and
+  trigger a rerun) after every click, or only once, when the user presses
+  a "Confirm points" button. See
+  [Minimizing reruns while placing points](#minimizing-reruns-while-placing-points)
+  below.
 - Control panel has its own solid dark background with light text, so
   the legend stays readable regardless of Streamlit's light/dark theme
   or page background color.
@@ -114,6 +119,7 @@ streamlit_3d_viewer/
                             #   (fully offline, no CDN needed)
 example_app.py                  # single-file upload demo: OBJ -> GLB conversion ("Home" page)
 example_obj_texture_demo.py     # direct OBJ+JPG rendering demo (no conversion step)
+simple_app.py                   # minimal demo: upload OBJ+JPG or GLB, toggle behavior flags
 demo_assets/
 └── obj_texture_demo/            # bundled sample OBJ+JPG for the demo above
 pages/
@@ -130,6 +136,18 @@ streamlit run example_app.py
 ```
 
 Uploads an OBJ + texture, converts, previews, shows selected points.
+
+### Minimal demo (no conversion, all flags exposed)
+
+```bash
+streamlit run simple_app.py
+```
+
+The bare-bones version: upload a GLB/glTF or an OBJ (+ optional texture)
+and it goes straight to `show_3d_viewer()` — no `convert()` step at all.
+Checkboxes in the sidebar let you flip `show_controls`,
+`point_submit_mode` ("immediate" vs. "confirm"), `enable_clipping`, and
+`show_cross_section` to try each one out quickly on your own files.
 
 ### Direct OBJ + JPG demo (no conversion)
 
@@ -203,9 +221,11 @@ Every control in the viewer accepts an initial value as a
 | `clip_plane_normal` | `[nx, ny, nz]` of the cutting plane | `None` = `[0, 1, 0]` (horizontal) |
 | `clip_gizmo_mode` | Gizmo "Move" / "Rotate" toggle | `None` = `"translate"` |
 | `show_both_clip_halves` | "Show both halves" checkbox | `None` = frontend keeps its state |
+| `separate_clip_halves` | "Separate halves" checkbox — nudges the two halves apart along the plane normal (see [below](#separating-vs-keeping-the-cut-halves-in-place)) | `None` = frontend keeps its state (starts on) |
 | `show_cross_section` | "Show cross-section" checkbox | `False` |
 | `unit_scale` | Meters per one model unit (for the m² area table) | `1.0` |
 | `initial_points` | Points pre-placed on the model | `None` |
+| `point_submit_mode` | When point edits are sent to Python: `"immediate"` or `"confirm"` (see below) | `"immediate"` |
 | `show_controls` | Show/hide the entire UI (see below) | `True` |
 
 ```python
@@ -222,6 +242,7 @@ points = show_3d_viewer(
     clip_plane_normal=[0, 1, 0],
     clip_gizmo_mode="rotate",
     show_both_clip_halves=True,
+    separate_clip_halves=False,  # keep both halves exactly in place while rotating the plane
     show_cross_section=True,
     unit_scale=0.001,   # model authored in millimeters
     initial_points=[{"point": [0.1, 0.2, 0.0], "uv": None}],
@@ -260,6 +281,44 @@ this mode — only the on-screen widgets and the cutting-plane's visible
 handle disappear. This is meant for dashboards or reports where you want
 a clean picture of the scan (optionally pre-cut and pre-angled from
 Python) without any Streamlit-independent UI cluttering the page.
+
+### Minimizing reruns while placing points
+
+By default (`point_submit_mode="immediate"`), every Shift+Click that adds
+a point, every marker drag, and every "Clear points" click sends the
+updated point list back to Python right away — which means a Streamlit
+rerun per action. That's fine for one or two points, but if the user
+needs to place many points on a scan (e.g. marking several dozen
+measurement locations on a tree), that's a lot of reruns for no benefit
+until they're actually done.
+
+Pass `point_submit_mode="confirm"` to change this: point edits (add /
+drag / clear) stay purely on the frontend, and a **"Confirm points"**
+button appears in the control panel. Nothing about the points is sent to
+Python — no rerun happens — until the user clicks it. At that point the
+full current point list (together with whatever the clip plane /
+cross-section / other settings currently are) is sent in a single rerun.
+
+```python
+result = show_3d_viewer("scan.glb", point_submit_mode="confirm")
+points = result["points"]  # only reflects the last "Confirm points" click
+```
+
+Notes:
+- The points-info text under the viewer shows "(not yet confirmed)"
+  while there are local edits that haven't been sent yet, and the
+  "Confirm points" button is only enabled while that's the case.
+- This only affects `points`. Sliders, checkboxes, and camera changes
+  keep reporting back immediately (on release/end), in both modes — only
+  point placement/dragging/clearing is deferred.
+- Switching from `"confirm"` back to `"immediate"` on a later rerun
+  flushes any points the user placed but hadn't confirmed yet, so
+  nothing gets silently dropped.
+- `show_controls=False` (read-only/embed mode, above) hides the
+  "Confirm points" button along with the rest of the UI. Combining it
+  with `point_submit_mode="confirm"` effectively makes point-clicking a
+  no-op back to Python, since there's no way to trigger the send — avoid
+  that combination unless that's exactly what you want.
 
 ### Reproducing the current view
 
@@ -357,6 +416,41 @@ this exact view" expander below the viewer, which shows the raw
   coordinate actually returned to Python is unaffected (still the exact
   clicked point), and markers on the model's far side are still properly
   hidden when you rotate around.
+
+### Separating vs. keeping the cut halves in place
+
+With "Show both halves" on, the second half is nudged apart from the
+first along the cutting plane's **current normal**, by a small distance
+scaled to the model's size, purely so the two cut faces are easier to
+tell apart visually. Because the offset direction always follows the
+normal, tilting/rotating the plane makes the two halves visibly slide
+relative to each other — which is exactly what you want while
+inspecting a cut, but can be disorienting if you're mainly using the
+plane to pick an orientation and don't want anything to appear to move
+underneath it.
+
+A **"Separate halves"** checkbox next to "Show both halves" controls
+this independently:
+
+- **Checked (default):** the nudge-apart behavior described above.
+- **Unchecked:** both halves stay exactly in their true position —
+  only the cut geometry itself differs between them, nothing shifts as
+  you rotate the plane.
+
+From Python:
+
+```python
+show_3d_viewer(
+    "scan.glb",
+    enable_clipping=True,
+    show_both_clip_halves=True,
+    separate_clip_halves=False,  # halves stay put; only pass True/False
+                                  # to override the checkbox from Python
+)
+```
+
+Like the other cutting-plane toggles, leave it as `None` (the default)
+to let the on-screen checkbox control it.
 
 ## Notes / limitations
 

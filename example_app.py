@@ -188,6 +188,7 @@ if report is not None:
         show_both_clip_halves=show_both_clip_halves,
         show_cross_section=show_cross_section,
         key="viewer",
+        point_submit_mode="confirm",
     )
     points = result["points"]
     clip_plane = result["clip_plane"]

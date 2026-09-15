@@ -494,7 +494,20 @@ class OrbitControls extends EventDispatcher {
 
 		function getZoomScale( delta ) {
 
-			const normalized_delta = Math.abs( delta ) / ( 100 * ( window.devicePixelRatio | 0 ) );
+			// FIX: the original `window.devicePixelRatio | 0` truncates any
+			// devicePixelRatio below 1 (e.g. browser zoom under 100%, some
+			// unusual display-scaling setups) down to exactly 0. That makes
+			// normalized_delta divide by zero -> Infinity, which collapses
+			// the dolly scale to 0 (zoom-in) or blows it up to Infinity
+			// (zoom-out) on the very next wheel tick. Once `scale` becomes
+			// 0 or Infinity, EVERY subsequent dolly (in either direction)
+			// stays 0/Infinity too, since multiplying/dividing 0 or
+			// Infinity by any finite factor never recovers a normal value
+			// — matching "one scroll step and it's tiny, next step it's
+			// gone, and zooming back in doesn't fix it". Guard with `|| 1`
+			// instead of `| 0` so any devicePixelRatio, fractional or not,
+			// is used safely without ever hitting divide-by-zero.
+			const normalized_delta = Math.abs( delta ) / ( 100 * ( window.devicePixelRatio || 1 ) );
 			return Math.pow( 0.95, scope.zoomSpeed * normalized_delta );
 
 		}

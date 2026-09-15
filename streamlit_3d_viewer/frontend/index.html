@@ -40,6 +40,19 @@
     border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; font-weight: 600;
   }
   button:hover { background: #dfe2fb; }
+  /* Prominent red state while there are locally-placed points not yet
+     sent to Python (point_submit_mode="confirm"), so it's unmistakable
+     that action is needed. */
+  button#btn-confirm-points.dirty {
+    background: #e0392b; color: #fff; border-color: #a8291f;
+    animation: stv-pulse 1.4s ease-in-out infinite;
+  }
+  button#btn-confirm-points.dirty:hover { background: #c72e22; }
+  @keyframes stv-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(224, 57, 43, 0.55); }
+    50% { box-shadow: 0 0 0 6px rgba(224, 57, 43, 0); }
+  }
+  #points-info.dirty { color: #e0392b; font-weight: 700; }
 
   #clip-panel {
     display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
@@ -179,6 +192,7 @@
     <button id="btn-full">Full scene</button>
     <button id="btn-detail">Zoom to selected points</button>
     <button id="btn-clear">Clear points</button>
+    <button id="btn-confirm-points" style="display:none;">Confirm points</button>
   </div>
   <div id="mesh-info"></div>
   <div id="points-info">Shift + Click on the model to add a point.</div>
@@ -198,6 +212,10 @@
     <button id="btn-clip-flip" type="button" style="display:none;">Flip side</button>
     <div class="ctrl" id="clip-both-halves-ctrl" style="display:none;">
       <label><input type="checkbox" id="clip-both-halves" /> Show both halves</label>
+      <label style="margin-top:4px;">
+        <input type="checkbox" id="clip-explode-halves" checked />
+        Separate halves
+      </label>
     </div>
     <div class="ctrl" id="clip-cross-section-ctrl" style="display:none;">
       <label><input type="checkbox" id="clip-cross-section" /> Show cross-section</label>
@@ -241,6 +259,19 @@ function stSetValue(value) { stSend("streamlit:setComponentValue", { value, data
 let scene, camera, renderer, controls, root, currentObject = null;
 let loadedModelKey = null; // identifies whichever model (glb, or obj+texture) is currently loaded
 let points = []; // {point:[x,y,z], uv:[u,v]}
+// "point_submit_mode" from Python: "immediate" (default) sends every point
+// change (add/move/clear) to Python right away, causing a rerun each time.
+// "confirm" keeps all point edits purely local — nothing is sent until the
+// user presses the "Confirm points" button — so placing many points in a
+// row costs zero reruns until the very end.
+let pointSubmitMode = "immediate";
+let pointsDirty = false; // true when points changed locally but weren't sent yet (confirm mode)
+// Snapshot of `points` as last actually reported to Python. In "confirm"
+// mode, sendValue() sends THIS instead of the live `points` array, so any
+// unrelated control (sliders, orbit-end, etc.) can call sendValue() without
+// leaking not-yet-confirmed point edits. Updated only on an explicit
+// "Confirm points" click, or continuously while in "immediate" mode.
+let lastSentPoints = [];
 let currentOpacity = 1.0;
 let markerScale = 1.0; // user-controlled relative marker size (1.0 = 100%)
 // Reference camera-to-model distance the marker's base radius was tuned
@@ -285,6 +316,14 @@ let clipEnabled = false;
 let showCrossSection = false;
 let showBothClipHalves = false;
 let requestedShowBothClipHalves = false;
+// Whether the second half gets nudged apart along the plane normal (see
+// bothHalvesGap()) for readability, or stays exactly coincident with the
+// first half. The offset direction follows the plane's current normal,
+// so with this on, tilting the plane makes the two halves visibly slide
+// relative to each other — desirable for inspecting the cut, but
+// sometimes distracting. Off = both halves rendered in their true,
+// un-nudged position; only the actual cut geometry differs between them.
+let bothHalvesExplode = true;
 let clipPlaneObj = null;      // Object3D: position/quaternion define the plane (local +Z = normal)
 let clipPlaneMesh = null;     // translucent visual quad
 let clipPlaneBorder = null;   // wireframe border of the quad
@@ -341,6 +380,7 @@ let lastClipGizmoModeKey = null;
  * hand once example_app.py's sidebar checkbox had sent it once. */
 let lastPyEnableClippingKey = undefined;
 let lastPyShowBothHalvesKey = undefined;
+let lastPySeparateHalvesKey = undefined;
 let lastPyShowCrossSectionKey = undefined;
 
 /* Initial placed points from Python (`initial_points`). */
@@ -403,7 +443,12 @@ function initScene() {
   // Reports the camera's final elevation/azimuth back to Python once an
   // orbit/pan/zoom interaction ends (mouse-drag doesn't otherwise touch
   // the elevation/azimuth sliders' own "change" event).
-  controls.addEventListener("end", sendValue);
+  // NOTE: must be an arrow function, not a bare `sendValue` reference —
+  // addEventListener() calls the handler with the Event object as its
+  // first argument, and sendValue(forceSyncPoints) would then receive
+  // that (truthy) Event as forceSyncPoints, forcing a points-sync on
+  // every single orbit interaction regardless of point_submit_mode.
+  controls.addEventListener("end", () => sendValue());
 
   root = new THREE.Group();
   scene.add(root);
@@ -426,6 +471,15 @@ function initScene() {
         draggedMarkerIndex = markersGroup.children.indexOf(intersects[0].object);
         if (draggedMarkerIndex !== -1) {
           controls.enabled = false; // Vypne rotaci kamery během posunu bodu
+          // Pointer capture: keeps THIS element receiving pointermove/
+          // pointerup for this pointer even if the cursor leaves the
+          // canvas mid-drag (e.g. released over the panel below). Without
+          // this, a release outside the canvas never fires "pointerup"
+          // here, draggedMarkerIndex stays set, and controls.enabled stays
+          // false forever — silently breaking BOTH orbit-drag and
+          // mouse-wheel zoom for the rest of the session (OrbitControls'
+          // own wheel handler bails out early whenever enabled is false).
+          try { renderer.domElement.setPointerCapture(e.pointerId); } catch (err) { /* unsupported: ignore, fallback below still applies */ }
         }
       }
     }
@@ -465,11 +519,22 @@ function initScene() {
     }
   });
 
+  // Single place that ends a marker drag, however it ends (normal
+  // pointerup, pointercancel, or the window-blur/lost-pointer-capture
+  // fallback below) — so controls.enabled is always reliably restored.
+  function endMarkerDrag(e) {
+    if (draggedMarkerIndex === -1) return;
+    draggedMarkerIndex = -1;
+    controls.enabled = true; // Znovu zapne rotaci kamery
+    if (e && e.pointerId != null) {
+      try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (err) { /* already released/unsupported: ignore */ }
+    }
+    notifyPointsChanged(); // Odeslání aktualizovaných bodů (respektuje point_submit_mode)
+  }
+
   renderer.domElement.addEventListener("pointerup", (e) => {
     if (draggedMarkerIndex !== -1) {
-      draggedMarkerIndex = -1;
-      controls.enabled = true; // Znovu zapne rotaci kamery
-      sendValue(); // Odeslání aktualizovaných bodů (a stavu roviny/řezu) do Streamlitu
+      endMarkerDrag(e);
     } else if (pointerDown) {
       const dist = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
       // Bod se přidá pouze v případě, že je stisknut Shift
@@ -481,6 +546,13 @@ function initScene() {
   });
 
   renderer.domElement.addEventListener("pointerleave", hideMarkerTooltip);
+  // Belt-and-braces alongside pointer capture above: pointercancel can
+  // fire instead of pointerup in some edge cases (e.g. the OS/browser
+  // interrupts the gesture), and losing window focus mid-drag (alt-tab)
+  // fires neither. Either way, a marker drag must not permanently disable
+  // orbit/zoom — always end it.
+  renderer.domElement.addEventListener("pointercancel", endMarkerDrag);
+  window.addEventListener("blur", () => endMarkerDrag(null));
 }
 
 function onResize() {
@@ -602,6 +674,18 @@ function fitCameraToObject(obj) {
   camera.position.copy(center).add(new THREE.Vector3(0, maxDim * 0.4, dist));
   camera.near = maxDim / 100;
   camera.far = maxDim * 100;
+  // Without a minDistance, scrolling the mouse wheel to zoom in has no
+  // lower bound: the camera can dolly all the way to (or through)
+  // controls.target. At that point the camera-to-target offset vector
+  // shrinks toward zero length, which makes syncSlidersFromCamera()'s
+  // spherical-coordinate math degenerate (phi collapses to 0), snapping
+  // the Elevation slider to its minimum (browsers clamp an out-of-range
+  // .value assignment) — and the near-zero distance also pushes the
+  // model behind the near-clipping plane, so the scan appears to vanish.
+  // Keeping the camera at least a small fraction of the model's size
+  // away from the target prevents both.
+  controls.minDistance = maxDim * 0.05;
+  controls.maxDistance = dist * 25; // matching sane cap so zooming out can't fly off to infinity either
   camera.updateProjectionMatrix();
   controls.update();
   syncSlidersFromCamera();
@@ -631,17 +715,31 @@ function applyPendingCameraAngles() {
  * e.g. [{point: [x,y,z], uv: [u,v] | null}, ...]. Called right after
  * `clearPoints()` on model load, so it doesn't fight the user's own
  * placed points across unrelated Streamlit reruns (see handleRender's
- * change-detection for the raw `args.initial_points` value). */
+ * change-detection for the raw `args.initial_points` value).
+ *
+ * Deliberately bypasses notifyPointsChanged(): these points came FROM
+ * Python, so Python already knows about them — echoing them straight
+ * back shouldn't light up "Confirm points" as if the user had just
+ * placed them locally. */
 function applyPendingInitialPoints() {
   if (!Array.isArray(pendingInitialPoints)) return;
   pendingInitialPoints.forEach((p) => {
     if (p && Array.isArray(p.point) && p.point.length === 3) {
+      const uv = Array.isArray(p.uv) ? p.uv : null;
+      points.push({ point: p.point, uv });
       // Same surface-embedding issue as manually clicked points can apply
       // here too if the Python-supplied point sits exactly on the mesh —
       // nudge the visual marker toward the camera (see offsetTowardCamera).
-      addPoint(p.point, Array.isArray(p.uv) ? p.uv : null, offsetTowardCamera(p.point));
+      addMarker(offsetTowardCamera(p.point));
     }
   });
+  // clearPoints() (called just before this, on model load) may have left
+  // pointsDirty=true in confirm mode; since we immediately sync
+  // lastSentPoints to match below, there's nothing actually unconfirmed.
+  pointsDirty = false;
+  updatePointsInfo();
+  lastSentPoints = clonePoints(points);
+  updateConfirmPointsButton();
 }
 
 function applyOpacity(value) {
@@ -725,9 +823,10 @@ function updateClipPlaneFromObject() {
 }
 
 /* How far apart to nudge the two halves so the cut faces are readable,
- * scaled to the model's own size. */
+ * scaled to the model's own size. Returns 0 (no offset at all) when the
+ * "Separate halves" toggle is off. */
 function bothHalvesGap() {
-  if (!currentObject) return 0;
+  if (!currentObject || !bothHalvesExplode) return 0;
   const box = new THREE.Box3().setFromObject(currentObject);
   const size = box.getSize(new THREE.Vector3());
   return (Math.max(size.x, size.y, size.z) || 1) * 0.05;
@@ -877,12 +976,23 @@ function setShowBothClipHalves(show) {
   requestedShowBothClipHalves = !!show;
   showBothClipHalves = clipEnabled ? requestedShowBothClipHalves : false;
   bothHalvesCheckbox.checked = showBothClipHalves;
+  explodeHalvesCheckbox.disabled = !showBothClipHalves;
   // Cross-section stays available regardless of both-halves: it's computed
   // from the full, unclipped geometry either way, so the cut outline/fill
   // and the area table keep working when both halves are visible.
   applyClippingPlanes();
   if (clipEnabled && showCrossSection) recomputeCrossSection();
   updateClipInfo();
+}
+
+/* Toggles whether "Show both halves" nudges the second half apart along
+ * the plane normal (see the comment on `bothHalvesExplode` above), or
+ * keeps it exactly in place. Cheap: no geometry rebuild needed, only the
+ * group's position changes. */
+function setBothHalvesExplode(explode) {
+  bothHalvesExplode = !!explode;
+  explodeHalvesCheckbox.checked = bothHalvesExplode;
+  updateBothHalvesOffset();
 }
 
 function setShowCrossSection(show) {
@@ -1330,19 +1440,70 @@ function currentSettingsPayload() {
     enable_clipping: clipEnabled,
     clip_gizmo_mode: transformControls ? transformControls.getMode() : "translate",
     show_both_clip_halves: showBothClipHalves,
+    separate_clip_halves: bothHalvesExplode,
     show_cross_section: showCrossSection,
     unit_scale: unitScale,
   };
 }
 
-/* Single place that assembles and sends the component's return value. */
-function sendValue() {
+/* Single place that assembles and sends the component's return value.
+ * `points` in the payload is NOT always the live, in-progress `points`
+ * array — see the note on `lastSentPoints` below. Any call site in this
+ * file (slider "change", orbit-controls "end", keyboard shortcuts, clip
+ * plane edits, etc.) can end up calling sendValue() as a side effect of
+ * something unrelated to points, so points must only be included when
+ * we actually intend to report them; otherwise "confirm" mode would leak
+ * unconfirmed points the moment *anything else* triggers a send. */
+function sendValue(forceSyncPoints) {
+  // Strict === true on purpose: sendValue is sometimes passed directly as
+  // an addEventListener callback (bugs like that have happened before —
+  // see the comments at the call sites), which would call this with a
+  // truthy Event object instead of a boolean. Only an explicit `true`
+  // should force-sync points.
+  const syncPoints = forceSyncPoints === true || pointSubmitMode !== "confirm";
+  if (syncPoints) lastSentPoints = clonePoints(points);
   stSetValue({
-    points,
+    points: lastSentPoints,
     clip_plane: currentClipPlanePayload(),
     cross_section: showCrossSection ? lastCrossSectionResult : null,
     settings: currentSettingsPayload(),
   });
+}
+
+function clonePoints(arr) {
+  return arr.map((p) => ({
+    point: Array.isArray(p.point) ? p.point.slice() : p.point,
+    uv: Array.isArray(p.uv) ? p.uv.slice() : p.uv,
+  }));
+}
+
+/* Call this instead of sendValue() after any change to the `points` array
+ * (add / drag / clear). In "immediate" mode it behaves exactly like before
+ * — sends right away, triggering a Streamlit rerun. In "confirm" mode it
+ * only updates the local UI (points-info text + the "Confirm points"
+ * button) and defers the actual stSetValue() until the user clicks
+ * "Confirm points" (see btn-confirm-points below) — even if some other,
+ * unrelated control triggers a plain sendValue() in the meantime (e.g.
+ * OrbitControls fires its "end" event on every click, including the
+ * Shift+Click that places a point), lastSentPoints keeps the reported
+ * points frozen at their last-confirmed state. */
+function notifyPointsChanged() {
+  if (pointSubmitMode === "confirm") {
+    pointsDirty = true;
+    updatePointsInfo();
+    updateConfirmPointsButton();
+  } else {
+    sendValue();
+  }
+}
+
+function updateConfirmPointsButton() {
+  const btn = document.getElementById("btn-confirm-points");
+  if (!btn) return;
+  btn.style.display = pointSubmitMode === "confirm" ? "inline-block" : "none";
+  btn.disabled = !pointsDirty;
+  btn.textContent = pointsDirty ? "Confirm points ●" : "Confirm points";
+  btn.classList.toggle("dirty", pointsDirty);
 }
 
 /* ---------- Sliders <-> Camera ---------- */
@@ -1357,8 +1518,14 @@ let syncingFromCamera = false;
 
 function syncSlidersFromCamera() {
   if (!controls) return;
-  syncingFromCamera = true;
   const offset = new THREE.Vector3().subVectors(camera.position, controls.target);
+  // Guard against the degenerate case where the camera coincides (or
+  // nearly coincides) with controls.target: THREE.Spherical's math
+  // collapses phi to 0 for a zero-length vector, which would otherwise
+  // snap the Elevation slider to its minimum. Simply leave the sliders
+  // at their last valid values rather than writing a bogus one.
+  if (offset.lengthSq() < 1e-8) return;
+  syncingFromCamera = true;
   const spherical = new THREE.Spherical().setFromVector3(offset);
   const elevDeg = THREE.MathUtils.radToDeg(spherical.phi);
   const azimDeg = (THREE.MathUtils.radToDeg(spherical.theta) + 360) % 360;
@@ -1393,15 +1560,18 @@ azimInput.addEventListener("input", () => {
 // "change" (fires once, on release) rather than "input" (fires continuously
 // while dragging) — reports the final value back to Python without
 // triggering a Streamlit rerun on every intermediate tick of the drag.
-elevInput.addEventListener("change", sendValue);
-azimInput.addEventListener("change", sendValue);
+// Arrow-wrapped for the same reason as controls' "end" listener above:
+// a bare `sendValue` reference here would receive the Event object as
+// `forceSyncPoints` and always force-sync points.
+elevInput.addEventListener("change", () => sendValue());
+azimInput.addEventListener("change", () => sendValue());
 
 opacityInput.addEventListener("input", () => {
   const v = parseInt(opacityInput.value, 10) / 100;
   lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
   applyOpacity(v);
 });
-opacityInput.addEventListener("change", sendValue);
+opacityInput.addEventListener("change", () => sendValue());
 
 const brightInput = document.getElementById("bright");
 const lblBright = document.getElementById("lbl-bright");
@@ -1409,7 +1579,7 @@ brightInput.addEventListener("input", () => {
   lblBright.textContent = `Brightness: ${brightInput.value}%`;
   renderer.toneMappingExposure = parseInt(brightInput.value, 10) / 100;
 });
-brightInput.addEventListener("change", sendValue);
+brightInput.addEventListener("change", () => sendValue());
 
 const markerSizeInput = document.getElementById("marker-size");
 const lblMarkerSize = document.getElementById("lbl-marker-size");
@@ -1417,7 +1587,7 @@ markerSizeInput.addEventListener("input", () => {
   lblMarkerSize.textContent = `Point size: ${markerSizeInput.value}%`;
   setMarkerScale(parseInt(markerSizeInput.value, 10) / 100);
 });
-markerSizeInput.addEventListener("change", sendValue);
+markerSizeInput.addEventListener("change", () => sendValue());
 
 // Orbiting/panning/zooming the camera with the mouse doesn't touch the
 // elevation/azimuth sliders' own "change" event, so report separately
@@ -1451,6 +1621,17 @@ document.getElementById("btn-detail").addEventListener("click", () => {
 
 document.getElementById("btn-clear").addEventListener("click", clearPoints);
 
+// "Confirm points" — only relevant in point_submit_mode="confirm": flushes
+// the locally-accumulated points (and current settings/clip state) to
+// Python in a single explicit rerun, instead of one rerun per click.
+document.getElementById("btn-confirm-points").addEventListener("click", () => {
+  if (pointSubmitMode !== "confirm") return;
+  sendValue(true); // force-sync: send the live `points`, not the frozen lastSentPoints
+  pointsDirty = false;
+  updatePointsInfo();
+  updateConfirmPointsButton();
+});
+
 /* ---------- Cutting plane: UI wiring ---------- */
 const clipCheckbox = document.getElementById("clip-enable");
 const clipModeCtrl = document.getElementById("clip-mode-ctrl");
@@ -1459,6 +1640,7 @@ const btnClipRotate = document.getElementById("btn-clip-rotate");
 const btnClipFlip = document.getElementById("btn-clip-flip");
 const bothHalvesCtrl = document.getElementById("clip-both-halves-ctrl");
 const bothHalvesCheckbox = document.getElementById("clip-both-halves");
+const explodeHalvesCheckbox = document.getElementById("clip-explode-halves");
 const crossSectionCtrl = document.getElementById("clip-cross-section-ctrl");
 const crossSectionCheckbox = document.getElementById("clip-cross-section");
 const clip2DCtrl = document.getElementById("cross-section-overlay");
@@ -1495,6 +1677,11 @@ btnClipFlip.addEventListener("click", () => {
 
 bothHalvesCheckbox.addEventListener("change", () => {
   setShowBothClipHalves(bothHalvesCheckbox.checked);
+  sendValue();
+});
+
+explodeHalvesCheckbox.addEventListener("change", () => {
+  setBothHalvesExplode(explodeHalvesCheckbox.checked);
   sendValue();
 });
 
@@ -1631,7 +1818,7 @@ function addPoint(point, uv, markerPoint) {
   points.push({ point, uv });
   if (point) addMarker(markerPoint || point);
   updatePointsInfo();
-  sendValue();
+  notifyPointsChanged();
 }
 
 function addMarker(point) {
@@ -1664,14 +1851,23 @@ function clearPoints() {
   markersGroup.clear();
   hideMarkerTooltip();
   updatePointsInfo();
-  sendValue();
+  notifyPointsChanged();
 }
 
 function updatePointsInfo() {
-  document.getElementById("points-info").textContent =
-    points.length === 0
-      ? "Shift + Click on the model to add a point."
-      : `${points.length} point(s) selected`;
+  let text;
+  const isDirty = pointSubmitMode === "confirm" && pointsDirty;
+  if (points.length === 0) {
+    text = "Shift + Click on the model to add a point.";
+  } else {
+    text = `${points.length} point(s) selected`;
+    if (isDirty) {
+      text += " — not yet confirmed!";
+    }
+  }
+  const infoEl = document.getElementById("points-info");
+  infoEl.textContent = text;
+  infoEl.classList.toggle("dirty", isDirty);
 }
 
 /* ---------- Render event from Streamlit ---------- */
@@ -1705,6 +1901,13 @@ function handleRender(args) {
     lastPyShowBothHalvesKey = args.show_both_clip_halves;
     setShowBothClipHalves(args.show_both_clip_halves);
   }
+  if (
+    typeof args.separate_clip_halves === "boolean"
+    && args.separate_clip_halves !== lastPySeparateHalvesKey
+  ) {
+    lastPySeparateHalvesKey = args.separate_clip_halves;
+    setBothHalvesExplode(args.separate_clip_halves);
+  }
   if (args.clip_plane_position || args.clip_plane_normal) {
     const key = JSON.stringify([args.clip_plane_position || null, args.clip_plane_normal || null]);
     if (key !== lastPyClipKey) {
@@ -1731,6 +1934,21 @@ function handleRender(args) {
   }
   if (typeof args.show_controls === "boolean" && args.show_controls !== controlsVisible) {
     setControlsVisible(args.show_controls);
+  }
+  if (
+    (args.point_submit_mode === "immediate" || args.point_submit_mode === "confirm")
+    && args.point_submit_mode !== pointSubmitMode
+  ) {
+    pointSubmitMode = args.point_submit_mode;
+    // Switching *into* immediate mode flushes anything still pending so
+    // it isn't silently lost; switching *into* confirm mode just starts
+    // deferring from here on (nothing to flush yet).
+    if (pointSubmitMode === "immediate" && pointsDirty) {
+      sendValue(true);
+      pointsDirty = false;
+    }
+    updatePointsInfo();
+    updateConfirmPointsButton();
   }
   if (args.clip_gizmo_mode === "translate" || args.clip_gizmo_mode === "rotate") {
     if (args.clip_gizmo_mode !== lastClipGizmoModeKey) {
