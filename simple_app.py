@@ -42,13 +42,14 @@ with st.sidebar:
         help="Sliders, buttons, cutting-plane handle. Mouse orbit/zoom/pan "
         "and Shift+Click to place a point still work either way.",
     )
-    defer_points = st.checkbox(
-        "Defer point sending (adds a 'Confirm points' button)",
+    defer_changes = st.checkbox(
+        "Defer everything until confirmed (adds a 'Confirm changes' button)",
         value=False,
         help='point_submit_mode="confirm" instead of the default '
-        '"immediate" — placed/moved/cleared points stay local until you '
-        "press the component's own Confirm button, instead of triggering "
-        "a rerun on every click.",
+        '"immediate" — points, camera, sliders, and the cutting plane '
+        "all stay local (the 3D view still updates live) until you press "
+        "the component's own Confirm button, instead of triggering a "
+        "rerun on every single interaction.",
     )
 
     with st.expander("More options"):
@@ -82,7 +83,7 @@ result = show_3d_viewer(
     obj_path=obj_path,
     texture_path=texture_path,
     show_controls=show_controls,
-    point_submit_mode="confirm" if defer_points else "immediate",
+    point_submit_mode="confirm" if defer_changes else "immediate",
     enable_clipping=enable_clipping,
     show_cross_section=show_cross_section,
     height=650,

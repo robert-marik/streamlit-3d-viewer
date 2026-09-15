@@ -18,8 +18,9 @@ Usage (render a raw OBJ + JPG/PNG texture directly, no conversion step):
 
     points = show_3d_viewer(obj_path="scan.obj", texture_path="scan.jpg")
 
-Usage (place many points before triggering a rerun, via an explicit
-"Confirm points" button in the component instead of one rerun per click):
+Usage (defer ALL reporting — points, clipping plane, cross-section,
+camera/sliders — behind an explicit "Confirm changes" button in the
+component, instead of a rerun on every single interaction):
 
     result = show_3d_viewer(model_path="scan.glb", point_submit_mode="confirm")
     points = result["points"]
@@ -209,24 +210,32 @@ def show_3d_viewer(
         object/content), so it won't wipe out points the user has
         since added or moved with the mouse.
     point_submit_mode : str
-        Controls when newly clicked/moved/cleared points are sent back
-        to Python (and therefore when they trigger a Streamlit rerun):
+        Controls when the component's returned value is actually sent
+        back to Python — and therefore when *any* interaction triggers a
+        Streamlit rerun:
 
-        - ``"immediate"`` (default, original behavior): every point
-          added with Shift+Click, every marker drag, and every "Clear
-          points" click is sent right away — one rerun per action.
-        - ``"confirm"``: point edits are kept purely on the frontend
-          side. Nothing is sent to Python until the user clicks the
-          component's own "Confirm points" button, at which point the
-          full current point list (plus clip plane / cross-section /
-          settings) is sent in a single rerun. This is the mode to use
-          if you want the user to place many points before the app
-          reruns at all — see "Minimizing reruns while placing points"
-          in the README.
+        - ``"immediate"`` (default, original behavior): every
+          interaction — placing/moving/clearing a point, releasing a
+          slider, orbiting/zooming the camera, dragging the cutting
+          plane, toggling "Show cross-section" or "Show both halves",
+          etc. — is sent right away, each one causing its own rerun.
+        - ``"confirm"``: nothing is sent to Python until the user clicks
+          the component's own "Confirm changes" button. Until then, all
+          of the above happens purely on the frontend — the 3D view,
+          the cutting-plane cut, and the cross-section overlay all keep
+          updating live, they just aren't *reported* yet — so the user
+          can freely orbit, place points, and adjust the cutting plane
+          without triggering a single rerun. Clicking "Confirm changes"
+          sends the full current state (points, clip plane,
+          cross-section, and settings together) in one rerun. This is
+          the mode to use if you want the user to set everything up
+          before the app reruns at all — see "Minimizing reruns" in the
+          README.
 
-        Note this only affects the ``points`` part of the returned
-        value. Sliders, checkboxes, and camera changes keep reporting
-        back immediately (on release/end) regardless of this setting.
+        In ``"confirm"`` mode, everything in the `Returns` section below
+        reflects the state as of the last "Confirm changes" click, not
+        the live on-screen state — it lags behind by design until the
+        user confirms.
     key : str | None
         Streamlit component key.
 
@@ -247,9 +256,6 @@ def show_3d_viewer(
           ``points_2d`` are the same points flattened into the plane's own
           in-plane (u, v) axes (see ``plane_basis``), handy for exporting
           a flat cut profile.
-          In ``point_submit_mode="confirm"``, this list reflects only
-          what was on screen the last time the user pressed "Confirm
-          points" — it lags behind clicks made since then, by design.
         - ``settings``: a live snapshot of every other on-screen control,
           in the same shape the matching `show_3d_viewer()` keyword
           arguments expect — ``{"background_color": "#1e1e1e", "opacity":
@@ -257,13 +263,16 @@ def show_3d_viewer(
           60.0, "camera_azimuth": 0.0, "enable_clipping": False,
           "clip_gizmo_mode": "translate", "show_both_clip_halves": False,
           "separate_clip_halves": True, "show_cross_section": False,
-          "unit_scale": 1.0}``. It updates
-          whenever the user releases a slider, toggles a checkbox, or
-          finishes dragging/orbiting — not on every intermediate tick —
-          so at any point you can feed it (together with ``clip_plane``
-          and ``points``) straight back into `show_3d_viewer()` to
-          reproduce exactly what's currently on screen; see "Reproducing
-          the current view" in the README.
+          "unit_scale": 1.0}``.
+
+        With the default ``point_submit_mode="immediate"``, every field
+        updates whenever the user releases a slider, toggles a checkbox,
+        or finishes dragging/orbiting — not on every intermediate tick.
+        With ``point_submit_mode="confirm"``, all fields update together,
+        only when "Confirm changes" is clicked. Either way, at any point
+        you can feed the whole dict straight back into `show_3d_viewer()`
+        to reproduce exactly what was last reported; see "Reproducing
+        the current view" in the README.
     """
     if point_submit_mode not in ("immediate", "confirm"):
         raise ValueError(

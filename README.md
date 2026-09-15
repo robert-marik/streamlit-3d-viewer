@@ -43,10 +43,11 @@ clean, read-only 3D view.
   (frames the camera so all currently selected points are visible).
 - Click on the model to add a point (3D position + UV); a red marker is
   shown at that spot. Points are returned to Python as a list.
-- **`point_submit_mode`**: choose whether points are sent to Python (and
-  trigger a rerun) after every click, or only once, when the user presses
-  a "Confirm points" button. See
-  [Minimizing reruns while placing points](#minimizing-reruns-while-placing-points)
+- **`point_submit_mode`**: choose whether every interaction (points,
+  camera, sliders, cutting plane, cross-section) is sent to Python (and
+  triggers a rerun) immediately, or only once, when the user presses a
+  "Confirm changes" button. See
+  [Minimizing reruns](#minimizing-reruns)
   below.
 - Control panel has its own solid dark background with light text, so
   the legend stays readable regardless of Streamlit's light/dark theme
@@ -225,7 +226,7 @@ Every control in the viewer accepts an initial value as a
 | `show_cross_section` | "Show cross-section" checkbox | `False` |
 | `unit_scale` | Meters per one model unit (for the m² area table) | `1.0` |
 | `initial_points` | Points pre-placed on the model | `None` |
-| `point_submit_mode` | When point edits are sent to Python: `"immediate"` or `"confirm"` (see below) | `"immediate"` |
+| `point_submit_mode` | When the returned value (points, clip plane, cross-section, settings) is sent to Python: `"immediate"` or `"confirm"` (see below) | `"immediate"` |
 | `show_controls` | Show/hide the entire UI (see below) | `True` |
 
 ```python
@@ -282,43 +283,50 @@ handle disappear. This is meant for dashboards or reports where you want
 a clean picture of the scan (optionally pre-cut and pre-angled from
 Python) without any Streamlit-independent UI cluttering the page.
 
-### Minimizing reruns while placing points
+### Minimizing reruns
 
-By default (`point_submit_mode="immediate"`), every Shift+Click that adds
-a point, every marker drag, and every "Clear points" click sends the
-updated point list back to Python right away — which means a Streamlit
-rerun per action. That's fine for one or two points, but if the user
-needs to place many points on a scan (e.g. marking several dozen
-measurement locations on a tree), that's a lot of reruns for no benefit
+By default (`point_submit_mode="immediate"`), **every** interaction sends
+an updated value back to Python right away — one Streamlit rerun per
+action. That's not just Shift+Click point placement: releasing a camera
+drag or a mouse-wheel zoom, releasing any slider, dragging the cutting
+plane, toggling "Show cross-section" or "Show both halves" — all of them
+call the same "report to Python" step. That's fine for the occasional
+click, but if the user is actively setting things up (placing several
+dozen measurement points, orbiting around to line up a cut, dragging the
+clipping plane into position), that's a lot of reruns for no benefit
 until they're actually done.
 
-Pass `point_submit_mode="confirm"` to change this: point edits (add /
-drag / clear) stay purely on the frontend, and a **"Confirm points"**
-button appears in the control panel. Nothing about the points is sent to
-Python — no rerun happens — until the user clicks it. At that point the
-full current point list (together with whatever the clip plane /
-cross-section / other settings currently are) is sent in a single rerun.
+Pass `point_submit_mode="confirm"` to change this: **nothing** is sent
+to Python — no rerun happens, for *any* interaction — until the user
+clicks the **"Confirm changes"** button that appears in the control
+panel. Until then, everything still works and updates live in the
+browser (you can orbit, zoom, place/drag points, move the cutting plane,
+toggle the cross-section — the 3D view and the 2D cut overlay both keep
+redrawing instantly); those changes just aren't *reported* back yet.
+Clicking "Confirm changes" sends the full current state — points, clip
+plane, cross-section, and settings together — in a single rerun.
 
 ```python
 result = show_3d_viewer("scan.glb", point_submit_mode="confirm")
-points = result["points"]  # only reflects the last "Confirm points" click
+points = result["points"]  # only reflects the last "Confirm changes" click
 ```
 
 Notes:
-- The points-info text under the viewer shows "(not yet confirmed)"
-  while there are local edits that haven't been sent yet, and the
-  "Confirm points" button is only enabled while that's the case.
-- This only affects `points`. Sliders, checkboxes, and camera changes
-  keep reporting back immediately (on release/end), in both modes — only
-  point placement/dragging/clearing is deferred.
+- A status line next to the button reads "Unconfirmed changes — click
+  Confirm to send." while there's anything pending, and "All changes
+  sent." otherwise; the button itself turns red while something is
+  pending, and is disabled otherwise.
+- This applies to the *entire* returned value — `points`, `clip_plane`,
+  `cross_section`, and `settings` all update together, only on
+  "Confirm changes". There's no partial mode where e.g. only points are
+  deferred but camera/sliders still report immediately.
 - Switching from `"confirm"` back to `"immediate"` on a later rerun
-  flushes any points the user placed but hadn't confirmed yet, so
-  nothing gets silently dropped.
+  flushes whatever was pending, so nothing gets silently dropped.
 - `show_controls=False` (read-only/embed mode, above) hides the
-  "Confirm points" button along with the rest of the UI. Combining it
-  with `point_submit_mode="confirm"` effectively makes point-clicking a
-  no-op back to Python, since there's no way to trigger the send — avoid
-  that combination unless that's exactly what you want.
+  "Confirm changes" button along with the rest of the UI. Combining it
+  with `point_submit_mode="confirm"` means there's no way to trigger a
+  send at all — avoid that combination unless that's exactly what you
+  want (e.g. a purely decorative, non-interactive viewer).
 
 ### Reproducing the current view
 

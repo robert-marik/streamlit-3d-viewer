@@ -53,6 +53,12 @@
     50% { box-shadow: 0 0 0 6px rgba(224, 57, 43, 0); }
   }
   #points-info.dirty { color: #e0392b; font-weight: 700; }
+  #pending-status {
+    font-size: 12px;
+    color: var(--stv-muted-text);
+    align-self: center;
+  }
+  #pending-status.dirty { color: #e0392b; font-weight: 700; }
 
   #clip-panel {
     display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
@@ -192,7 +198,8 @@
     <button id="btn-full">Full scene</button>
     <button id="btn-detail">Zoom to selected points</button>
     <button id="btn-clear">Clear points</button>
-    <button id="btn-confirm-points" style="display:none;">Confirm points</button>
+    <button id="btn-confirm-points" style="display:none;">Confirm changes</button>
+    <span id="pending-status" style="display:none;"></span>
   </div>
   <div id="mesh-info"></div>
   <div id="points-info">Shift + Click on the model to add a point.</div>
@@ -259,19 +266,17 @@ function stSetValue(value) { stSend("streamlit:setComponentValue", { value, data
 let scene, camera, renderer, controls, root, currentObject = null;
 let loadedModelKey = null; // identifies whichever model (glb, or obj+texture) is currently loaded
 let points = []; // {point:[x,y,z], uv:[u,v]}
-// "point_submit_mode" from Python: "immediate" (default) sends every point
-// change (add/move/clear) to Python right away, causing a rerun each time.
-// "confirm" keeps all point edits purely local — nothing is sent until the
-// user presses the "Confirm points" button — so placing many points in a
-// row costs zero reruns until the very end.
+// "point_submit_mode" from Python: "immediate" (default) reports every
+// change (points, clip plane, cross-section, camera, sliders, ...) to
+// Python right away, causing a Streamlit rerun on every interaction.
+// "confirm" holds back the ENTIRE returned value — nothing is sent until
+// the user presses the "Confirm changes" button — so orbiting the camera,
+// dragging the cutting plane, placing points, etc. cost zero reruns until
+// the very end. The 3D view itself (including the cutting-plane cut and
+// the cross-section overlay) keeps updating live throughout; only the
+// report back to Python is deferred.
 let pointSubmitMode = "immediate";
-let pointsDirty = false; // true when points changed locally but weren't sent yet (confirm mode)
-// Snapshot of `points` as last actually reported to Python. In "confirm"
-// mode, sendValue() sends THIS instead of the live `points` array, so any
-// unrelated control (sliders, orbit-end, etc.) can call sendValue() without
-// leaking not-yet-confirmed point edits. Updated only on an explicit
-// "Confirm points" click, or continuously while in "immediate" mode.
-let lastSentPoints = [];
+let pendingChanges = false; // true when something changed locally but (confirm mode) hasn't been reported to Python yet
 let currentOpacity = 1.0;
 let markerScale = 1.0; // user-controlled relative marker size (1.0 = 100%)
 // Reference camera-to-model distance the marker's base radius was tuned
@@ -529,7 +534,7 @@ function initScene() {
     if (e && e.pointerId != null) {
       try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (err) { /* already released/unsupported: ignore */ }
     }
-    notifyPointsChanged(); // Odeslání aktualizovaných bodů (respektuje point_submit_mode)
+    sendValue(); // respektuje point_submit_mode (viz sendValue())
   }
 
   renderer.domElement.addEventListener("pointerup", (e) => {
@@ -594,7 +599,7 @@ function onModelLoaded(object, sizeKb, formatLabel) {
   applyOpacity(currentOpacity);
   fitCameraToObject(currentObject);
   applyPendingCameraAngles();
-  clearPoints();
+  clearPoints(false); // housekeeping, not a user action — see clearPoints() doc
   applyPendingInitialPoints();
   reportMeshInfo(currentObject, sizeKb, formatLabel);
   initClipPlaneForModel();
@@ -713,14 +718,14 @@ function applyPendingCameraAngles() {
 
 /* Seeds the viewer with points supplied from Python via `initial_points`,
  * e.g. [{point: [x,y,z], uv: [u,v] | null}, ...]. Called right after
- * `clearPoints()` on model load, so it doesn't fight the user's own
+ * `clearPoints(false)` on model load, so it doesn't fight the user's own
  * placed points across unrelated Streamlit reruns (see handleRender's
  * change-detection for the raw `args.initial_points` value).
  *
- * Deliberately bypasses notifyPointsChanged(): these points came FROM
- * Python, so Python already knows about them — echoing them straight
- * back shouldn't light up "Confirm points" as if the user had just
- * placed them locally. */
+ * Deliberately doesn't call sendValue(): these points came FROM Python,
+ * so Python already knows about them — echoing them straight back
+ * shouldn't mark a pending change or light up "Confirm changes" as if
+ * the user had just placed them locally. */
 function applyPendingInitialPoints() {
   if (!Array.isArray(pendingInitialPoints)) return;
   pendingInitialPoints.forEach((p) => {
@@ -733,13 +738,7 @@ function applyPendingInitialPoints() {
       addMarker(offsetTowardCamera(p.point));
     }
   });
-  // clearPoints() (called just before this, on model load) may have left
-  // pointsDirty=true in confirm mode; since we immediately sync
-  // lastSentPoints to match below, there's nothing actually unconfirmed.
-  pointsDirty = false;
   updatePointsInfo();
-  lastSentPoints = clonePoints(points);
-  updateConfirmPointsButton();
 }
 
 function applyOpacity(value) {
@@ -1447,63 +1446,60 @@ function currentSettingsPayload() {
 }
 
 /* Single place that assembles and sends the component's return value.
- * `points` in the payload is NOT always the live, in-progress `points`
- * array — see the note on `lastSentPoints` below. Any call site in this
- * file (slider "change", orbit-controls "end", keyboard shortcuts, clip
- * plane edits, etc.) can end up calling sendValue() as a side effect of
- * something unrelated to points, so points must only be included when
- * we actually intend to report them; otherwise "confirm" mode would leak
- * unconfirmed points the moment *anything else* triggers a send. */
-function sendValue(forceSyncPoints) {
+ * This is the ONE gate every interaction in this file goes through —
+ * camera orbit ("end"), every slider ("change"), clip-plane gizmo edits,
+ * cross-section/both-halves toggles, and point add/drag/clear all just
+ * call sendValue() same as before. What changed: in "confirm" mode,
+ * sendValue() (without `force`) no longer calls stSetValue() at all — it
+ * just remembers something is pending and updates the "Confirm changes"
+ * button/status, so NONE of those interactions triggers a Streamlit
+ * rerun. The 3D scene itself (clipping, cross-section overlay, camera)
+ * keeps updating live regardless; only the report back to Python waits.
+ * Call sendValue(true) (only the Confirm button does) to actually flush
+ * the current, live state — points, clip plane, cross-section, and
+ * settings together, whatever they are at that moment. */
+function sendValue(force) {
   // Strict === true on purpose: sendValue is sometimes passed directly as
   // an addEventListener callback (bugs like that have happened before —
   // see the comments at the call sites), which would call this with a
   // truthy Event object instead of a boolean. Only an explicit `true`
-  // should force-sync points.
-  const syncPoints = forceSyncPoints === true || pointSubmitMode !== "confirm";
-  if (syncPoints) lastSentPoints = clonePoints(points);
+  // should force a flush.
+  if (pointSubmitMode === "confirm" && force !== true) {
+    pendingChanges = true;
+    updatePendingUI();
+    return;
+  }
+  pendingChanges = false;
   stSetValue({
-    points: lastSentPoints,
+    points,
     clip_plane: currentClipPlanePayload(),
     cross_section: showCrossSection ? lastCrossSectionResult : null,
     settings: currentSettingsPayload(),
   });
+  updatePendingUI();
 }
 
-function clonePoints(arr) {
-  return arr.map((p) => ({
-    point: Array.isArray(p.point) ? p.point.slice() : p.point,
-    uv: Array.isArray(p.uv) ? p.uv.slice() : p.uv,
-  }));
+function updatePendingUI() {
+  updatePointsInfo();
+  updateConfirmButton();
 }
 
-/* Call this instead of sendValue() after any change to the `points` array
- * (add / drag / clear). In "immediate" mode it behaves exactly like before
- * — sends right away, triggering a Streamlit rerun. In "confirm" mode it
- * only updates the local UI (points-info text + the "Confirm points"
- * button) and defers the actual stSetValue() until the user clicks
- * "Confirm points" (see btn-confirm-points below) — even if some other,
- * unrelated control triggers a plain sendValue() in the meantime (e.g.
- * OrbitControls fires its "end" event on every click, including the
- * Shift+Click that places a point), lastSentPoints keeps the reported
- * points frozen at their last-confirmed state. */
-function notifyPointsChanged() {
-  if (pointSubmitMode === "confirm") {
-    pointsDirty = true;
-    updatePointsInfo();
-    updateConfirmPointsButton();
-  } else {
-    sendValue();
-  }
-}
-
-function updateConfirmPointsButton() {
+function updateConfirmButton() {
   const btn = document.getElementById("btn-confirm-points");
-  if (!btn) return;
-  btn.style.display = pointSubmitMode === "confirm" ? "inline-block" : "none";
-  btn.disabled = !pointsDirty;
-  btn.textContent = pointsDirty ? "Confirm points ●" : "Confirm points";
-  btn.classList.toggle("dirty", pointsDirty);
+  const status = document.getElementById("pending-status");
+  if (btn) {
+    btn.style.display = pointSubmitMode === "confirm" ? "inline-block" : "none";
+    btn.disabled = !pendingChanges;
+    btn.textContent = pendingChanges ? "Confirm changes ●" : "Confirm changes";
+    btn.classList.toggle("dirty", pendingChanges);
+  }
+  if (status) {
+    status.style.display = pointSubmitMode === "confirm" ? "inline" : "none";
+    status.textContent = pendingChanges
+      ? "Unconfirmed changes — click Confirm to send."
+      : "All changes sent.";
+    status.classList.toggle("dirty", pendingChanges);
+  }
 }
 
 /* ---------- Sliders <-> Camera ---------- */
@@ -1619,17 +1615,20 @@ document.getElementById("btn-detail").addEventListener("click", () => {
   syncSlidersFromCamera();
 });
 
-document.getElementById("btn-clear").addEventListener("click", clearPoints);
+// NOTE: arrow-wrapped, not a bare `clearPoints` reference — same reason
+// as elsewhere in this file: addEventListener would call it with the
+// click Event as the first argument (clearPoints' `report` parameter).
+// Harmless here since an Event object is truthy too, but let's not rely
+// on that.
+document.getElementById("btn-clear").addEventListener("click", () => clearPoints());
 
-// "Confirm points" — only relevant in point_submit_mode="confirm": flushes
-// the locally-accumulated points (and current settings/clip state) to
-// Python in a single explicit rerun, instead of one rerun per click.
+// "Confirm changes" — only relevant in point_submit_mode="confirm":
+// flushes whatever changed locally (points, clip plane, cross-section,
+// camera/sliders) to Python in a single explicit rerun, instead of one
+// rerun per interaction.
 document.getElementById("btn-confirm-points").addEventListener("click", () => {
   if (pointSubmitMode !== "confirm") return;
-  sendValue(true); // force-sync: send the live `points`, not the frozen lastSentPoints
-  pointsDirty = false;
-  updatePointsInfo();
-  updateConfirmPointsButton();
+  sendValue(true);
 });
 
 /* ---------- Cutting plane: UI wiring ---------- */
@@ -1818,7 +1817,7 @@ function addPoint(point, uv, markerPoint) {
   points.push({ point, uv });
   if (point) addMarker(markerPoint || point);
   updatePointsInfo();
-  notifyPointsChanged();
+  sendValue(); // respektuje point_submit_mode
 }
 
 function addMarker(point) {
@@ -1846,28 +1845,24 @@ function setMarkerScale(scale) {
   markersGroup.children.forEach((m) => m.scale.setScalar(markerScale));
 }
 
-function clearPoints() {
+/* `report=false` is used for the internal reset on model (re)load (see
+ * the call site right before applyPendingInitialPoints()) — that's
+ * housekeeping, not a user action, so it shouldn't mark a pending change
+ * or report anything to Python. The "Clear points" button always uses
+ * the default `report=true`. */
+function clearPoints(report = true) {
   points = [];
   markersGroup.clear();
   hideMarkerTooltip();
   updatePointsInfo();
-  notifyPointsChanged();
+  if (report) sendValue(); // respektuje point_submit_mode
 }
 
 function updatePointsInfo() {
-  let text;
-  const isDirty = pointSubmitMode === "confirm" && pointsDirty;
-  if (points.length === 0) {
-    text = "Shift + Click on the model to add a point.";
-  } else {
-    text = `${points.length} point(s) selected`;
-    if (isDirty) {
-      text += " — not yet confirmed!";
-    }
-  }
-  const infoEl = document.getElementById("points-info");
-  infoEl.textContent = text;
-  infoEl.classList.toggle("dirty", isDirty);
+  const text = points.length === 0
+    ? "Shift + Click on the model to add a point."
+    : `${points.length} point(s) selected`;
+  document.getElementById("points-info").textContent = text;
 }
 
 /* ---------- Render event from Streamlit ---------- */
@@ -1943,12 +1938,11 @@ function handleRender(args) {
     // Switching *into* immediate mode flushes anything still pending so
     // it isn't silently lost; switching *into* confirm mode just starts
     // deferring from here on (nothing to flush yet).
-    if (pointSubmitMode === "immediate" && pointsDirty) {
+    if (pointSubmitMode === "immediate" && pendingChanges) {
       sendValue(true);
-      pointsDirty = false;
+    } else {
+      updatePendingUI();
     }
-    updatePointsInfo();
-    updateConfirmPointsButton();
   }
   if (args.clip_gizmo_mode === "translate" || args.clip_gizmo_mode === "rotate") {
     if (args.clip_gizmo_mode !== lastClipGizmoModeKey) {
