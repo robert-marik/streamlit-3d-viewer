@@ -24,6 +24,27 @@
   #canvas-wrap { position: relative; width: 100%; height: 500px; border-radius: 8px; overflow: hidden; }
   canvas { display: block; width: 100% !important; height: 100% !important; }
 
+  /* Pulzující linka nahoře a dole v okně s 3D appletem, signalizující
+     nepotvrzené změny (point_submit_mode="confirm"). Nahrazuje dřívější
+     křiklavý pruh přes celou šířku prohlížeče. */
+  @keyframes stv-edge-pulse {
+    0% { box-shadow: 0 0 4px rgba(224, 57, 43, 0.6); background-color: #e0392b; }
+    50% { box-shadow: 0 0 16px rgba(224, 57, 43, 1); background-color: #ff5b4d; }
+    100% { box-shadow: 0 0 4px rgba(224, 57, 43, 0.6); background-color: #e0392b; }
+  }
+  .stv-edge-indicator {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 6px;
+    z-index: 20;
+    display: none;
+    pointer-events: none;
+    animation: stv-edge-pulse 1.2s infinite ease-in-out;
+  }
+  #stv-edge-top { top: 0; }
+  #stv-edge-bottom { bottom: 0; }
+
   #panel {
     display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
     padding: 10px 10px 8px 10px; margin-top: 8px;
@@ -52,6 +73,9 @@
     0%, 100% { box-shadow: 0 0 0 0 rgba(224, 57, 43, 0.55); }
     50% { box-shadow: 0 0 0 6px rgba(224, 57, 43, 0); }
   }
+  button#btn-reject-points { background: #d9d9d9; }
+  button#btn-reject-points:hover { background: #c7c7c7; }
+  button#btn-reject-points:disabled { background: #eaeaea; color: #999; cursor: not-allowed; }
   #points-info.dirty { color: #e0392b; font-weight: 700; }
   #pending-status {
     font-size: 12px;
@@ -159,6 +183,8 @@
 <div id="app">
   <div id="canvas-wrap">
     <div id="marker-tooltip"></div>
+    <div id="stv-edge-top" class="stv-edge-indicator"></div>
+    <div id="stv-edge-bottom" class="stv-edge-indicator"></div>
     <div id="cross-section-overlay" style="display:none;">
       <div id="cross-section-overlay-label">Cross-section</div>
       <canvas id="cross-section-2d" width="200" height="140"></canvas>
@@ -199,6 +225,7 @@
     <button id="btn-detail">Zoom to selected points</button>
     <button id="btn-clear">Clear points</button>
     <button id="btn-confirm-points" style="display:none;">Confirm changes</button>
+    <button id="btn-reject-points" style="display:none;">Reject changes</button>
     <span id="pending-status" style="display:none;"></span>
   </div>
   <div id="mesh-info"></div>
@@ -232,7 +259,7 @@
     <div id="clip-keys-hint" style="display:none;font-size:11px;color:var(--stv-muted-text);margin-top:4px;line-height:1.5;">
       Click the 3D view, then: <b>C</b> cut on/off &middot; <b>1/2/3</b> axis X/Y/Z &middot;
       <b>&uarr;/&darr;</b> move plane (Shift = fast) &middot; <b>G</b> move/rotate gizmo &middot;
-      <b>F</b> flip side &middot; <b>B</b> both halves &middot; <b>S</b> cross-section &middot; <b>R</b> reset
+      <b>F</b> flip side &middot; <b>B</b> both halves &middot; <b>S</b> cross-section &middot; <b>R</b> reset cut
     </div>
   </div>
 </div>
@@ -277,6 +304,7 @@ let points = []; // {point:[x,y,z], uv:[u,v]}
 // report back to Python is deferred.
 let pointSubmitMode = "immediate";
 let pendingChanges = false; // true when something changed locally but (confirm mode) hasn't been reported to Python yet
+let lastConfirmedSnapshot = null; // last state that was actually sent (or the initial state) — what "Reject changes" restores
 let currentOpacity = 1.0;
 let markerScale = 1.0; // user-controlled relative marker size (1.0 = 100%)
 // Reference camera-to-model distance the marker's base radius was tuned
@@ -603,6 +631,10 @@ function onModelLoaded(object, sizeKb, formatLabel) {
   applyPendingInitialPoints();
   reportMeshInfo(currentObject, sizeKb, formatLabel);
   initClipPlaneForModel();
+  // A freshly loaded model (with whatever initial points came with it) is
+  // the new baseline "Reject changes" should fall back to — not whatever
+  // was pending on the previous model.
+  lastConfirmedSnapshot = snapshotConfirmedState();
 }
 
 function loadModel(url, sizeKb) {
@@ -969,6 +1001,7 @@ function setControlsVisible(visible) {
   document.getElementById("points-info").style.display = display;
   document.getElementById("hint").style.display = display;
   applyClipGizmoVisibility();
+  updateEdgeIndicators();
 }
 
 function setShowBothClipHalves(show) {
@@ -1445,6 +1478,80 @@ function currentSettingsPayload() {
   };
 }
 
+/* Snapshot of everything "Reject changes" needs to restore: the points
+ * placed so far, the clip-plane transform, and the settings payload
+ * (camera, opacity, brightness, marker size, clipping toggles). Taken
+ * right after every successful flush to Python (see sendValue()) and
+ * once at startup, so it always reflects the last state Python actually
+ * knows about. */
+function snapshotConfirmedState() {
+  return {
+    points: points.map((p) => ({
+      point: Array.isArray(p.point) ? p.point.slice() : null,
+      uv: Array.isArray(p.uv) ? p.uv.slice() : null,
+    })),
+    clip_plane: currentClipPlanePayload(),
+    settings: currentSettingsPayload(),
+  };
+}
+
+/* Reverts the viewer back to `lastConfirmedSnapshot` — everything the
+ * user changed since the last confirm is discarded locally, and nothing
+ * is sent to Python (there's nothing new for it to know about). */
+function restoreConfirmedState() {
+  if (!lastConfirmedSnapshot) return;
+  const snap = lastConfirmedSnapshot;
+
+  clearPoints(false);
+  (snap.points || []).forEach((p) => {
+    if (!p || !Array.isArray(p.point)) return;
+    points.push({ point: p.point.slice(), uv: Array.isArray(p.uv) ? p.uv.slice() : null });
+    addMarker(offsetTowardCamera(p.point));
+  });
+  updatePointsInfo();
+
+  const s = snap.settings || {};
+  if (typeof s.opacity === "number") {
+    opacityInput.value = Math.round(s.opacity * 100);
+    lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
+    applyOpacity(s.opacity);
+  }
+  if (typeof s.brightness === "number" && renderer) {
+    brightInput.value = Math.round(s.brightness * 100);
+    lblBright.textContent = `Brightness: ${brightInput.value}%`;
+    renderer.toneMappingExposure = s.brightness;
+  }
+  if (typeof s.marker_size === "number") {
+    const pct = Math.round(s.marker_size * 100);
+    markerSizeInput.value = pct;
+    lblMarkerSize.textContent = `Point size: ${pct}%`;
+    setMarkerScale(s.marker_size);
+  }
+  if (typeof s.camera_elevation === "number") {
+    elevInput.value = s.camera_elevation;
+    lblElev.textContent = `Elevation: ${elevInput.value}°`;
+  }
+  if (typeof s.camera_azimuth === "number") {
+    azimInput.value = s.camera_azimuth;
+    lblAzim.textContent = `View angle: ${azimInput.value}°`;
+  }
+  updateCameraFromSliders();
+
+  if (typeof s.enable_clipping === "boolean") setClipEnabled(s.enable_clipping);
+  if (snap.clip_plane) setClipPlaneTransform(snap.clip_plane.position, snap.clip_plane.normal);
+  if (s.clip_gizmo_mode === "translate" || s.clip_gizmo_mode === "rotate") {
+    transformControls.setMode(s.clip_gizmo_mode);
+    btnClipMove.classList.toggle("active", s.clip_gizmo_mode === "translate");
+    btnClipRotate.classList.toggle("active", s.clip_gizmo_mode === "rotate");
+  }
+  if (typeof s.show_both_clip_halves === "boolean") setShowBothClipHalves(s.show_both_clip_halves);
+  if (typeof s.separate_clip_halves === "boolean") setBothHalvesExplode(s.separate_clip_halves);
+  if (typeof s.show_cross_section === "boolean") setShowCrossSection(s.show_cross_section);
+
+  pendingChanges = false;
+  updatePendingUI();
+}
+
 /* Single place that assembles and sends the component's return value.
  * This is the ONE gate every interaction in this file goes through —
  * camera orbit ("end"), every slider ("change"), clip-plane gizmo edits,
@@ -1476,22 +1583,48 @@ function sendValue(force) {
     cross_section: showCrossSection ? lastCrossSectionResult : null,
     settings: currentSettingsPayload(),
   });
+  lastConfirmedSnapshot = snapshotConfirmedState();
   updatePendingUI();
 }
 
 function updatePendingUI() {
   updatePointsInfo();
   updateConfirmButton();
+  updateEdgeIndicators();
+}
+
+/* ---------- Pulsing top/bottom edge indicator ----------
+ * The in-panel "Confirm changes" button and "pending-status" text can be
+ * easy to miss, so while point_submit_mode="confirm" and something is
+ * waiting to be sent, a thin pulsing red line lights up along the top and
+ * bottom edges of the 3D viewer window itself (#canvas-wrap) — enough to
+ * catch the eye without taking over the whole browser page.
+ *
+ * Only shown while the on-screen controls (including the "Confirm
+ * changes" / "Reject changes" buttons themselves) are visible — if
+ * `show_controls` has hidden the panel there's nothing the user could do
+ * about it anyway, so the indicator stays off too. */
+function updateEdgeIndicators() {
+  const show = pointSubmitMode === "confirm" && pendingChanges && controlsVisible;
+  const top = document.getElementById("stv-edge-top");
+  const bottom = document.getElementById("stv-edge-bottom");
+  if (top) top.style.display = show ? "block" : "none";
+  if (bottom) bottom.style.display = show ? "block" : "none";
 }
 
 function updateConfirmButton() {
   const btn = document.getElementById("btn-confirm-points");
+  const rejectBtn = document.getElementById("btn-reject-points");
   const status = document.getElementById("pending-status");
   if (btn) {
     btn.style.display = pointSubmitMode === "confirm" ? "inline-block" : "none";
     btn.disabled = !pendingChanges;
     btn.textContent = pendingChanges ? "Confirm changes ●" : "Confirm changes";
     btn.classList.toggle("dirty", pendingChanges);
+  }
+  if (rejectBtn) {
+    rejectBtn.style.display = pointSubmitMode === "confirm" ? "inline-block" : "none";
+    rejectBtn.disabled = !pendingChanges;
   }
   if (status) {
     status.style.display = pointSubmitMode === "confirm" ? "inline" : "none";
@@ -1629,6 +1762,11 @@ document.getElementById("btn-clear").addEventListener("click", () => clearPoints
 document.getElementById("btn-confirm-points").addEventListener("click", () => {
   if (pointSubmitMode !== "confirm") return;
   sendValue(true);
+});
+
+document.getElementById("btn-reject-points").addEventListener("click", () => {
+  if (pointSubmitMode !== "confirm") return;
+  restoreConfirmedState();
 });
 
 /* ---------- Cutting plane: UI wiring ---------- */
@@ -1999,6 +2137,11 @@ window.addEventListener("message", (event) => {
 initScene();
 stReady();
 stSetFrameHeight(document.getElementById("app").scrollHeight);
+// In case a Streamlit re-render replaced this iframe's document while an
+// older instance had left the edge indicator lines visible, immediately put
+// them back into the correct (hidden, since pendingChanges starts false) state.
+updateEdgeIndicators();
+lastConfirmedSnapshot = snapshotConfirmedState();
 
 /* Any DOM change that alters the panel's height (toggling "Cutting plane",
  * "Show cross-section", etc. all show/hide rows below the 3D view) must be
