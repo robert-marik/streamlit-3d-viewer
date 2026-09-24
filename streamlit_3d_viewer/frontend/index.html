@@ -24,6 +24,21 @@
   #canvas-wrap { position: relative; width: 100%; height: 500px; border-radius: 8px; overflow: hidden; }
   canvas { display: block; width: 100% !important; height: 100% !important; }
 
+  /* Fullscreen: the 3D scene fills the screen height, the control panels
+     stay usable below it. */
+  #app:fullscreen {
+    display: flex; flex-direction: column; height: 100vh; overflow: auto;
+    background: #ffffff; padding: 8px; box-sizing: border-box;
+  }
+  #app:fullscreen #canvas-wrap { flex: 1 1 auto; height: auto; min-height: 300px; border-radius: 0; }
+  #btn-fullscreen {
+    position: absolute; top: 10px; left: 10px; z-index: 20;
+    width: 32px; height: 32px; padding: 0; font-size: 18px; line-height: 30px;
+    background: rgba(255, 255, 255, 0.8); color: #222222;
+    border: 1px solid #bbbbbb; border-radius: 6px; cursor: pointer;
+  }
+  #btn-fullscreen:hover { background: #ffffff; }
+
   /* Pulzující linka nahoře a dole v okně s 3D appletem, signalizující
      nepotvrzené změny (point_submit_mode="confirm"). Nahrazuje dřívější
      křiklavý pruh přes celou šířku prohlížeče. */
@@ -182,6 +197,7 @@
 <body>
 <div id="app">
   <div id="canvas-wrap">
+    <button id="btn-fullscreen" type="button" title="Fullscreen" aria-label="Fullscreen">&#x26F6;</button>
     <div id="marker-tooltip"></div>
     <div id="stv-edge-top" class="stv-edge-indicator"></div>
     <div id="stv-edge-bottom" class="stv-edge-indicator"></div>
@@ -286,7 +302,11 @@ function stSend(type, data) {
   window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*");
 }
 function stReady() { stSend("streamlit:componentReady", { apiVersion: 1 }); }
-function stSetFrameHeight(h) { stSend("streamlit:setFrameHeight", { height: h }); }
+function stSetFrameHeight(h) {
+  // In fullscreen the iframe height on the page must stay unchanged.
+  if (document.fullscreenElement) return;
+  stSend("streamlit:setFrameHeight", { height: h });
+}
 function stSetValue(value) { stSend("streamlit:setComponentValue", { value, dataType: "json" }); }
 
 /* ---------- State ---------- */
@@ -2154,7 +2174,30 @@ if (typeof ResizeObserver !== "undefined") {
     stSetFrameHeight(appEl.scrollHeight);
   });
   resizeObserver.observe(appEl);
+  new ResizeObserver(onResize).observe(wrap);
 }
+
+/* Fullscreen toggle for the whole viewer (scene + panels). Streamlit allows
+ * "fullscreen" in the component iframe's feature policy. */
+(function initFullscreen() {
+  const btn = document.getElementById("btn-fullscreen");
+  const appEl = document.getElementById("app");
+  if (!document.fullscreenEnabled) { btn.style.display = "none"; return; }
+  // Keep the click away from the scene's pointer handlers (Shift+click adds points).
+  btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+  btn.addEventListener("click", () => {
+    const req = document.fullscreenElement ? document.exitFullscreen() : appEl.requestFullscreen();
+    if (req && req.catch) req.catch((err) => console.warn("Fullscreen failed:", err));
+  });
+  document.addEventListener("fullscreenchange", () => {
+    const active = !!document.fullscreenElement;
+    btn.innerHTML = active ? "&#x2715;" : "&#x26F6;";
+    btn.title = active ? "Exit fullscreen" : "Fullscreen";
+    btn.setAttribute("aria-label", btn.title);
+    onResize();
+    if (!active) stSetFrameHeight(appEl.scrollHeight);
+  });
+})();
 </script>
 </body>
 </html>
