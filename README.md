@@ -228,6 +228,7 @@ Every control in the viewer accepts an initial value as a
 | `initial_points` | Points pre-placed on the model | `None` |
 | `point_submit_mode` | When the returned value (points, clip plane, cross-section, settings) is sent to Python: `"immediate"` or `"confirm"` (see below) | `"immediate"` |
 | `show_controls` | Show/hide the entire UI (see below) | `True` |
+| `overlay` | Image drawn on a flat quad in the scene (see [Image overlay](#image-overlay)) | `None` |
 
 ```python
 points = show_3d_viewer(
@@ -282,6 +283,32 @@ this mode — only the on-screen widgets and the cutting-plane's visible
 handle disappear. This is meant for dashboards or reports where you want
 a clean picture of the scan (optionally pre-cut and pre-angled from
 Python) without any Streamlit-independent UI cluttering the page.
+
+### Image overlay
+
+`overlay` draws an image (PNG/JPEG data URL) on a flat quad inside the
+scene — e.g. a tomogram placed on a cross-section of a stem:
+
+```python
+import base64
+
+img = base64.b64encode(open("tomogram.png", "rb").read()).decode()
+show_3d_viewer(
+    "scan.glb",
+    overlay={
+        "image": f"data:image/png;base64,{img}",
+        # model coordinates: bottom-left, bottom-right, top-right, top-left
+        "corners": [[-0.2, 0.4, -0.2], [0.2, 0.4, -0.2],
+                    [0.2, 0.4, 0.2], [-0.2, 0.4, 0.2]],
+        "opacity": 0.9,  # optional, default 0.9
+    },
+)
+```
+
+Transparent pixels stay transparent. The overlay is not clipped by the
+cutting plane. Like the other initial-state parameters it is re-applied
+only when the value changes; passing `None` removes it. `corners` must be
+exactly four `[x, y, z]` points, otherwise `ValueError` is raised.
 
 ### Minimizing reruns
 
