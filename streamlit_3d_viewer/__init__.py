@@ -71,6 +71,7 @@ def show_3d_viewer(
     show_controls=True,
     initial_points=None,
     point_submit_mode="immediate",
+    overlay=None,
     key=None,
 ):
     """
@@ -236,6 +237,15 @@ def show_3d_viewer(
         reflects the state as of the last "Confirm changes" click, not
         the live on-screen state — it lags behind by design until the
         user confirms.
+    overlay : dict | None
+        An image drawn on a flat quad inside the scene, e.g. a tomogram
+        placed on a cross-section of the stem:
+        ``{"image": <PNG/JPEG data URL>, "corners": [[x, y, z] * 4],
+        "opacity": 0.9}``. The corners are in model coordinates, in the
+        order bottom-left, bottom-right, top-right, top-left of the image
+        (transparent pixels stay transparent). The overlay is not clipped
+        by the cutting plane. Re-applied only when the value changes;
+        ``None`` removes it.
     key : str | None
         Streamlit component key.
 
@@ -302,6 +312,14 @@ def show_3d_viewer(
         default=_EMPTY_VALUE,
         key=key,
     )
+    if overlay is not None:
+        corners = [[float(v) for v in c] for c in overlay["corners"]]
+        if len(corners) != 4 or any(len(c) != 3 for c in corners):
+            raise ValueError("overlay['corners'] must be four [x, y, z] points.")
+        kwargs["overlay"] = {"image": str(overlay["image"]), "corners": corners,
+                             "opacity": float(overlay.get("opacity", 0.9))}
+    else:
+        kwargs["overlay"] = None
     if enable_clipping is not None:
         kwargs["enable_clipping"] = bool(enable_clipping)
     if show_cross_section is not None:

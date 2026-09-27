@@ -2023,6 +2023,40 @@ function updatePointsInfo() {
   document.getElementById("points-info").textContent = text;
 }
 
+/* ---------- Image overlay on a quad (e.g. a tomogram on a stem cross-section) ---------- */
+let overlayMesh = null;
+let lastOverlayKey = null;
+
+/* `ov` = {image: data URL, corners: [[x,y,z] x 4] (bottom-left, bottom-right,
+ * top-right, top-left of the image), opacity} or null to remove the overlay.
+ * Drawn without the cutting plane's clipping, on top of the scan surface. */
+function setOverlay(ov) {
+  if (overlayMesh) {
+    scene.remove(overlayMesh);
+    overlayMesh.geometry.dispose();
+    if (overlayMesh.material.map) overlayMesh.material.map.dispose();
+    overlayMesh.material.dispose();
+    overlayMesh = null;
+  }
+  if (!ov || !ov.image || !Array.isArray(ov.corners) || ov.corners.length !== 4) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(ov.corners.flat(), 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  const tex = textureLoader.load(ov.image);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    opacity: typeof ov.opacity === "number" ? ov.opacity : 0.9,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  overlayMesh = new THREE.Mesh(geo, mat);
+  overlayMesh.renderOrder = 10;
+  scene.add(overlayMesh);
+}
+
 /* ---------- Render event from Streamlit ---------- */
 function handleRender(args) {
   if (args.background_color) {
@@ -2117,6 +2151,14 @@ function handleRender(args) {
       pendingCameraElevation = args.camera_elevation ?? null;
       pendingCameraAzimuth = args.camera_azimuth ?? null;
       applyPendingCameraAngles();
+    }
+  }
+  if ("overlay" in args) {
+    const ov = args.overlay;
+    const key = ov ? `${ov.image.length}|${ov.image.slice(-64)}|${JSON.stringify(ov.corners)}|${ov.opacity}` : "none";
+    if (key !== lastOverlayKey) {
+      lastOverlayKey = key;
+      setOverlay(ov);
     }
   }
   if (Array.isArray(args.initial_points)) {
