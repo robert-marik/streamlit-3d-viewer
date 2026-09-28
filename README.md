@@ -301,12 +301,15 @@ show_3d_viewer(
         "corners": [[-0.2, 0.4, -0.2], [0.2, 0.4, -0.2],
                     [0.2, 0.4, 0.2], [-0.2, 0.4, 0.2]],
         "opacity": 0.9,  # optional, default 0.9
+        "on_top": False,  # optional: True draws it over the scan surface
     },
 )
 ```
 
 Transparent pixels stay transparent. The overlay is not clipped by the
-cutting plane. Like the other initial-state parameters it is re-applied
+cutting plane. With `"on_top": True` it is drawn over the scan surface even
+where the surface is in front of it, so an overlay inside an opaque stem
+stays visible (it then no longer looks hidden by the stem). Like the other initial-state parameters it is re-applied
 only when the value changes; passing `None` removes it. `corners` must be
 exactly four `[x, y, z]` points, otherwise `ValueError` is raised.
 

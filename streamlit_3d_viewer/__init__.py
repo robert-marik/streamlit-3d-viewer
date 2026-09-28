@@ -241,10 +241,12 @@ def show_3d_viewer(
         An image drawn on a flat quad inside the scene, e.g. a tomogram
         placed on a cross-section of the stem:
         ``{"image": <PNG/JPEG data URL>, "corners": [[x, y, z] * 4],
-        "opacity": 0.9}``. The corners are in model coordinates, in the
-        order bottom-left, bottom-right, top-right, top-left of the image
-        (transparent pixels stay transparent). The overlay is not clipped
-        by the cutting plane. Re-applied only when the value changes;
+        "opacity": 0.9, "on_top": False}``. The corners are in model
+        coordinates, in the order bottom-left, bottom-right, top-right,
+        top-left of the image (transparent pixels stay transparent). The
+        overlay is not clipped by the cutting plane. With ``on_top=True`` it
+        is drawn over the scan surface even where the surface is in front
+        of it, so it stays visible through an opaque stem. Re-applied only when the value changes;
         ``None`` removes it.
     key : str | None
         Streamlit component key.
@@ -317,7 +319,8 @@ def show_3d_viewer(
         if len(corners) != 4 or any(len(c) != 3 for c in corners):
             raise ValueError("overlay['corners'] must be four [x, y, z] points.")
         kwargs["overlay"] = {"image": str(overlay["image"]), "corners": corners,
-                             "opacity": float(overlay.get("opacity", 0.9))}
+                             "opacity": float(overlay.get("opacity", 0.9)),
+                             "on_top": bool(overlay.get("on_top", False))}
     else:
         kwargs["overlay"] = None
     if enable_clipping is not None:

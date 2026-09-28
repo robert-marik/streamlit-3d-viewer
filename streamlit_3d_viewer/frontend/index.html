@@ -2028,8 +2028,9 @@ let overlayMesh = null;
 let lastOverlayKey = null;
 
 /* `ov` = {image: data URL, corners: [[x,y,z] x 4] (bottom-left, bottom-right,
- * top-right, top-left of the image), opacity} or null to remove the overlay.
- * Drawn without the cutting plane's clipping, on top of the scan surface. */
+ * top-right, top-left of the image), opacity, on_top} or null to remove the overlay.
+ * Drawn without the cutting plane's clipping. With `on_top` it is drawn over the
+ * scan even where the surface is in front of it (visible through an opaque stem). */
 function setOverlay(ov) {
   if (overlayMesh) {
     scene.remove(overlayMesh);
@@ -2051,6 +2052,7 @@ function setOverlay(ov) {
     opacity: typeof ov.opacity === "number" ? ov.opacity : 0.9,
     side: THREE.DoubleSide,
     depthWrite: false,
+    depthTest: !ov.on_top,
   });
   overlayMesh = new THREE.Mesh(geo, mat);
   overlayMesh.renderOrder = 10;
@@ -2155,7 +2157,7 @@ function handleRender(args) {
   }
   if ("overlay" in args) {
     const ov = args.overlay;
-    const key = ov ? `${ov.image.length}|${ov.image.slice(-64)}|${JSON.stringify(ov.corners)}|${ov.opacity}` : "none";
+    const key = ov ? `${ov.image.length}|${ov.image.slice(-64)}|${JSON.stringify(ov.corners)}|${ov.opacity}|${!!ov.on_top}` : "none";
     if (key !== lastOverlayKey) {
       lastOverlayKey = key;
       setOverlay(ov);
