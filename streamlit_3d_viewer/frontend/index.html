@@ -228,6 +228,11 @@
     <div class="ctrl">
       <label id="lbl-opacity">Opacity: 100%</label>
       <input type="range" id="opacity" min="0" max="100" value="100" />
+      <!-- Shown only while an image overlay is displayed (see setOverlay). -->
+      <div id="overlay-opacity-ctrl" style="display:none; margin-top:6px;">
+        <label id="lbl-overlay-opacity">Overlay: 90%</label>
+        <input type="range" id="overlay-opacity" min="0" max="100" value="90" />
+      </div>
     </div>
     <div class="ctrl">
       <label id="lbl-bright">Brightness: 130%</label>
@@ -1533,7 +1538,7 @@ function restoreConfirmedState() {
   const s = snap.settings || {};
   if (typeof s.opacity === "number") {
     opacityInput.value = Math.round(s.opacity * 100);
-    lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
+    lblOpacity.textContent = `${modelOpacityLabel()}: ${opacityInput.value}%`;
     applyOpacity(s.opacity);
   }
   if (typeof s.brightness === "number" && renderer) {
@@ -1717,7 +1722,7 @@ azimInput.addEventListener("change", () => sendValue());
 
 opacityInput.addEventListener("input", () => {
   const v = parseInt(opacityInput.value, 10) / 100;
-  lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
+  lblOpacity.textContent = `${modelOpacityLabel()}: ${opacityInput.value}%`;
   applyOpacity(v);
 });
 opacityInput.addEventListener("change", () => sendValue());
@@ -2026,10 +2031,38 @@ function updatePointsInfo() {
 /* ---------- Image overlay on a quad (e.g. a tomogram on a stem cross-section) ---------- */
 let overlayMesh = null;
 let lastOverlayKey = null;
+/* Overlay opacity: the value from Python applies when it changes; in between,
+ * the "overlay-opacity" slider sets it locally (no rerun, nothing to confirm). */
+let overlayOpacity = null;
+let lastPyOverlayOpacity = null;
+let overlayLabels = { label: "Overlay", model_label: "Model" };
+const overlayOpacityCtrl = document.getElementById("overlay-opacity-ctrl");
+const overlayOpacityInput = document.getElementById("overlay-opacity");
+const lblOverlayOpacity = document.getElementById("lbl-overlay-opacity");
+
+function modelOpacityLabel() {
+  return overlayMesh ? overlayLabels.model_label : "Opacity";
+}
+
+function updateOpacityLabels() {
+  lblOpacity.textContent = `${modelOpacityLabel()}: ${opacityInput.value}%`;
+  overlayOpacityCtrl.style.display = overlayMesh ? "" : "none";
+  if (overlayMesh) {
+    overlayOpacityInput.value = Math.round(overlayOpacity * 100);
+    lblOverlayOpacity.textContent = `${overlayLabels.label}: ${overlayOpacityInput.value}%`;
+  }
+}
+
+overlayOpacityInput.addEventListener("input", () => {
+  overlayOpacity = parseInt(overlayOpacityInput.value, 10) / 100;
+  if (overlayMesh) overlayMesh.material.opacity = overlayOpacity;
+  lblOverlayOpacity.textContent = `${overlayLabels.label}: ${overlayOpacityInput.value}%`;
+});
 
 /* `ov` = {image: data URL, corners: [[x,y,z] x 4] (bottom-left, bottom-right,
- * top-right, top-left of the image), opacity} or null to remove the overlay.
- * Drawn without the cutting plane's clipping, on top of the scan surface. */
+ * top-right, top-left of the image), opacity, on_top} or null to remove the overlay.
+ * Drawn without the cutting plane's clipping. With `on_top` it is drawn over the
+ * scan even where the surface is in front of it (visible through an opaque stem). */
 function setOverlay(ov) {
   if (overlayMesh) {
     scene.remove(overlayMesh);
@@ -2038,7 +2071,16 @@ function setOverlay(ov) {
     overlayMesh.material.dispose();
     overlayMesh = null;
   }
-  if (!ov || !ov.image || !Array.isArray(ov.corners) || ov.corners.length !== 4) return;
+  if (!ov || !ov.image || !Array.isArray(ov.corners) || ov.corners.length !== 4) {
+    updateOpacityLabels();
+    return;
+  }
+  const pyOpacity = typeof ov.opacity === "number" ? ov.opacity : 0.9;
+  if (pyOpacity !== lastPyOverlayOpacity || overlayOpacity === null) {
+    lastPyOverlayOpacity = pyOpacity;
+    overlayOpacity = pyOpacity;
+  }
+  overlayLabels = { label: ov.label || "Overlay", model_label: ov.model_label || "Model" };
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(ov.corners.flat(), 3));
   geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
@@ -2048,13 +2090,15 @@ function setOverlay(ov) {
   const mat = new THREE.MeshBasicMaterial({
     map: tex,
     transparent: true,
-    opacity: typeof ov.opacity === "number" ? ov.opacity : 0.9,
+    opacity: overlayOpacity,
     side: THREE.DoubleSide,
     depthWrite: false,
+    depthTest: !ov.on_top,
   });
   overlayMesh = new THREE.Mesh(geo, mat);
   overlayMesh.renderOrder = 10;
   scene.add(overlayMesh);
+  updateOpacityLabels();
 }
 
 /* ---------- Render event from Streamlit ---------- */
@@ -2064,7 +2108,7 @@ function handleRender(args) {
   }
   if (typeof args.opacity === "number") {
     opacityInput.value = Math.round(args.opacity * 100);
-    lblOpacity.textContent = `Opacity: ${opacityInput.value}%`;
+    lblOpacity.textContent = `${modelOpacityLabel()}: ${opacityInput.value}%`;
     applyOpacity(args.opacity);
   }
   if (typeof args.marker_size === "number") {
@@ -2155,7 +2199,7 @@ function handleRender(args) {
   }
   if ("overlay" in args) {
     const ov = args.overlay;
-    const key = ov ? `${ov.image.length}|${ov.image.slice(-64)}|${JSON.stringify(ov.corners)}|${ov.opacity}` : "none";
+    const key = ov ? `${ov.image.length}|${ov.image.slice(-64)}|${JSON.stringify(ov.corners)}|${ov.opacity}|${!!ov.on_top}|${ov.label}|${ov.model_label}` : "none";
     if (key !== lastOverlayKey) {
       lastOverlayKey = key;
       setOverlay(ov);
