@@ -46,6 +46,26 @@ def _file_to_data_url(path, mime):
     return f"data:{mime};base64,{b64}"
 
 
+def _file_url(path, mime):
+    """URL under which the browser loads a model or texture file.
+
+    Inside a running Streamlit app the file is served by Streamlit's media
+    endpoint: the URL depends only on the file content, so the browser
+    downloads a large scan once instead of receiving it inside the component
+    arguments on every rerun. Outside a running app (e.g. tests) a data URL
+    is returned as before.
+    """
+    try:
+        from streamlit.runtime import exists, get_instance
+        if exists():
+            path = Path(path)
+            return get_instance().media_file_mgr.add(
+                str(path), mime, f"streamlit_3d_viewer:{path.resolve()}")
+    except Exception:  # internal Streamlit API: fall back to the data URL
+        pass
+    return _file_to_data_url(path, mime)
+
+
 _EMPTY_VALUE = {"points": [], "clip_plane": None, "cross_section": None, "settings": {}}
 
 
@@ -340,13 +360,13 @@ def show_3d_viewer(
 
     if obj_path is not None:
         obj_path = Path(obj_path)
-        obj_url = _file_to_data_url(obj_path, "text/plain")
+        obj_url = _file_url(obj_path, "text/plain")
 
         texture_url = None
         if texture_path is not None:
             texture_path = Path(texture_path)
             tex_mime = mimetypes.guess_type(str(texture_path))[0] or "image/jpeg"
-            texture_url = _file_to_data_url(texture_path, tex_mime)
+            texture_url = _file_url(texture_path, tex_mime)
 
         value = _component_func(
             model_type="objtex",
@@ -363,7 +383,7 @@ def show_3d_viewer(
         if model_path is None:
             raise ValueError("Either model_path or obj_path must be given.")
         model_path = Path(model_path)
-        model_url = _file_to_data_url(model_path, "model/gltf-binary")
+        model_url = _file_url(model_path, "model/gltf-binary")
         model_size_kb = round(model_path.stat().st_size / 1024, 1)
 
         value = _component_func(
