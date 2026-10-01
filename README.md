@@ -223,6 +223,7 @@ Every control in the viewer accepts an initial value as a
 | `clip_gizmo_mode` | Gizmo "Move" / "Rotate" toggle | `None` = `"translate"` |
 | `show_both_clip_halves` | "Show both halves" checkbox | `None` = frontend keeps its state |
 | `separate_clip_halves` | "Separate halves" checkbox — nudges the two halves apart along the plane normal (see [below](#separating-vs-keeping-the-cut-halves-in-place)) | `None` = frontend keeps its state (starts on) |
+| `show_clip_plane` | "Show plane" checkbox — hide the plane and its gizmo while the model stays cut (see [below](#hiding-the-cutting-plane)) | `None` = frontend keeps its state (starts shown) |
 | `show_cross_section` | "Show cross-section" checkbox | `False` |
 | `unit_scale` | Meters per one model unit (for the m² area table) | `1.0` |
 | `initial_points` | Points pre-placed on the model | `None` |
@@ -493,6 +494,21 @@ show_3d_viewer(
 
 Like the other cutting-plane toggles, leave it as `None` (the default)
 to let the on-screen checkbox control it.
+
+### Hiding the cutting plane
+
+The **"Show plane"** checkbox (below "Separate halves") hides the
+translucent plane, its border and the move/rotate gizmo, while the model
+stays cut. Untick it for a clean view or a screenshot of the cut; tick it
+again to move or rotate the plane.
+
+```python
+show_3d_viewer(
+    "scan.glb",
+    enable_clipping=True,
+    show_clip_plane=False,  # cut, but no plane drawn
+)
+```
 
 ## Notes / limitations
 

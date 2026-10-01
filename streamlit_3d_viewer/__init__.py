@@ -86,6 +86,7 @@ def show_3d_viewer(
     clip_gizmo_mode=None,
     show_both_clip_halves=None,
     separate_clip_halves=None,
+    show_clip_plane=None,
     show_cross_section=False,
     unit_scale=1.0,
     show_controls=True,
@@ -195,6 +196,12 @@ def show_3d_viewer(
         the "Separate halves" checkbox next to "Show both halves". If
         ``None`` (default), the frontend checkbox controls this state
         (starts enabled).
+    show_clip_plane : bool | None
+        Draw the cutting plane itself (translucent quad, border and the
+        move/rotate gizmo). ``False`` hides it while the model stays cut;
+        the plane cannot be dragged until it is shown again. Also
+        toggleable via the "Show plane" checkbox. If ``None`` (default),
+        the frontend checkbox controls this state (starts shown).
     show_cross_section : bool | None
         Compute and draw the polygon(s) where the cutting plane
         intersects the model, and include them in the returned value.
@@ -298,7 +305,7 @@ def show_3d_viewer(
           1.0, "brightness": 1.3, "marker_size": 1.0, "camera_elevation":
           60.0, "camera_azimuth": 0.0, "enable_clipping": False,
           "clip_gizmo_mode": "translate", "show_both_clip_halves": False,
-          "separate_clip_halves": True, "show_cross_section": False,
+          "separate_clip_halves": True, "show_clip_plane": True, "show_cross_section": False,
           "unit_scale": 1.0}``.
 
         With the default ``point_submit_mode="immediate"``, every field
@@ -357,6 +364,8 @@ def show_3d_viewer(
         kwargs["show_both_clip_halves"] = bool(show_both_clip_halves)
     if separate_clip_halves is not None:
         kwargs["separate_clip_halves"] = bool(separate_clip_halves)
+    if show_clip_plane is not None:
+        kwargs["show_clip_plane"] = bool(show_clip_plane)
 
     if obj_path is not None:
         obj_path = Path(obj_path)

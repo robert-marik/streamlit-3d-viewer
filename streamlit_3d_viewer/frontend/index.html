@@ -271,6 +271,10 @@
         <input type="checkbox" id="clip-explode-halves" checked />
         Separate halves
       </label>
+      <label style="margin-top:4px;">
+        <input type="checkbox" id="clip-show-plane" checked />
+        Show plane
+      </label>
     </div>
     <div class="ctrl" id="clip-cross-section-ctrl" style="display:none;">
       <label><input type="checkbox" id="clip-cross-section" /> Show cross-section</label>
@@ -382,6 +386,10 @@ let requestedShowBothClipHalves = false;
 // sometimes distracting. Off = both halves rendered in their true,
 // un-nudged position; only the actual cut geometry differs between them.
 let bothHalvesExplode = true;
+// Whether the cutting plane itself (translucent quad, border and gizmo) is
+// drawn. Off = the model stays cut, only the plane is hidden (and cannot be
+// dragged until shown again).
+let clipPlaneShown = true;
 let clipPlaneObj = null;      // Object3D: position/quaternion define the plane (local +Z = normal)
 let clipPlaneMesh = null;     // translucent visual quad
 let clipPlaneBorder = null;   // wireframe border of the quad
@@ -439,6 +447,7 @@ let lastClipGizmoModeKey = null;
 let lastPyEnableClippingKey = undefined;
 let lastPyShowBothHalvesKey = undefined;
 let lastPySeparateHalvesKey = undefined;
+let lastPyShowPlaneKey = undefined;
 let lastPyShowCrossSectionKey = undefined;
 
 /* Initial placed points from Python (`initial_points`). */
@@ -893,7 +902,9 @@ function bothHalvesGap() {
 function updateBothHalvesOffset() {
   if (bothHalvesGroup.children.length === 0) return;
   const gap = bothHalvesGap();
-  bothHalvesGroup.position.copy(threePlane.normal).multiplyScalar(gap);
+  // The primary object keeps the side the normal points to; the copy keeps the
+  // opposite side, so it moves against the normal (away from the primary half).
+  bothHalvesGroup.position.copy(threePlane.normal).multiplyScalar(-gap);
 }
 
 /* Turn a [x,y,z] position and/or [nx,ny,nz] normal coming from Python into
@@ -1007,7 +1018,7 @@ function setClipEnabled(enabled) {
  * clipping the geometry (via `applyClippingPlanes`) with its handle
  * hidden, e.g. when Python drives the plane's transform directly. */
 function applyClipGizmoVisibility() {
-  const gizmoVisible = clipEnabled && controlsVisible;
+  const gizmoVisible = clipEnabled && controlsVisible && clipPlaneShown;
   clipPlaneMesh.visible = gizmoVisible;
   clipPlaneBorder.visible = gizmoVisible;
   transformControls.visible = gizmoVisible;
@@ -1050,6 +1061,14 @@ function setBothHalvesExplode(explode) {
   bothHalvesExplode = !!explode;
   explodeHalvesCheckbox.checked = bothHalvesExplode;
   updateBothHalvesOffset();
+}
+
+/* Shows or hides the cutting plane (quad, border, gizmo) without changing
+ * the cut itself. */
+function setClipPlaneShown(show) {
+  clipPlaneShown = !!show;
+  showPlaneCheckbox.checked = clipPlaneShown;
+  applyClipGizmoVisibility();
 }
 
 function setShowCrossSection(show) {
@@ -1498,6 +1517,7 @@ function currentSettingsPayload() {
     clip_gizmo_mode: transformControls ? transformControls.getMode() : "translate",
     show_both_clip_halves: showBothClipHalves,
     separate_clip_halves: bothHalvesExplode,
+    show_clip_plane: clipPlaneShown,
     show_cross_section: showCrossSection,
     unit_scale: unitScale,
   };
@@ -1571,6 +1591,7 @@ function restoreConfirmedState() {
   }
   if (typeof s.show_both_clip_halves === "boolean") setShowBothClipHalves(s.show_both_clip_halves);
   if (typeof s.separate_clip_halves === "boolean") setBothHalvesExplode(s.separate_clip_halves);
+  if (typeof s.show_clip_plane === "boolean") setClipPlaneShown(s.show_clip_plane);
   if (typeof s.show_cross_section === "boolean") setShowCrossSection(s.show_cross_section);
 
   pendingChanges = false;
@@ -1803,6 +1824,7 @@ const btnClipFlip = document.getElementById("btn-clip-flip");
 const bothHalvesCtrl = document.getElementById("clip-both-halves-ctrl");
 const bothHalvesCheckbox = document.getElementById("clip-both-halves");
 const explodeHalvesCheckbox = document.getElementById("clip-explode-halves");
+const showPlaneCheckbox = document.getElementById("clip-show-plane");
 const crossSectionCtrl = document.getElementById("clip-cross-section-ctrl");
 const crossSectionCheckbox = document.getElementById("clip-cross-section");
 const clip2DCtrl = document.getElementById("cross-section-overlay");
@@ -1844,6 +1866,11 @@ bothHalvesCheckbox.addEventListener("change", () => {
 
 explodeHalvesCheckbox.addEventListener("change", () => {
   setBothHalvesExplode(explodeHalvesCheckbox.checked);
+  sendValue();
+});
+
+showPlaneCheckbox.addEventListener("change", () => {
+  setClipPlaneShown(showPlaneCheckbox.checked);
   sendValue();
 });
 
@@ -2138,6 +2165,13 @@ function handleRender(args) {
   ) {
     lastPySeparateHalvesKey = args.separate_clip_halves;
     setBothHalvesExplode(args.separate_clip_halves);
+  }
+  if (
+    typeof args.show_clip_plane === "boolean"
+    && args.show_clip_plane !== lastPyShowPlaneKey
+  ) {
+    lastPyShowPlaneKey = args.show_clip_plane;
+    setClipPlaneShown(args.show_clip_plane);
   }
   if (args.clip_plane_position || args.clip_plane_normal) {
     const key = JSON.stringify([args.clip_plane_position || null, args.clip_plane_normal || null]);
