@@ -275,6 +275,10 @@
         <input type="checkbox" id="clip-show-plane" checked />
         Show plane
       </label>
+      <label style="margin-top:4px;">
+        <input type="checkbox" id="clip-fill-cut" checked />
+        Close cut faces
+      </label>
     </div>
     <div class="ctrl" id="clip-cross-section-ctrl" style="display:none;">
       <label><input type="checkbox" id="clip-cross-section" /> Show cross-section</label>
@@ -408,6 +412,15 @@ let crossSectionStatusTimer = null;
  * normal so both cut faces are clearly visible side by side. */
 let bothHalvesGroup = new THREE.Group();
 let threePlaneNegated = new THREE.Plane(); // kept in sync with threePlane, negated
+// Clip plane of the copied half: threePlaneNegated moved together with the copy,
+// so the copy shows exactly its own half wherever it is moved.
+let cloneClipPlane = new THREE.Plane();
+// "Close cut faces": solid caps on the cut, built from the cross-section outline.
+let fillCutFaces = true;
+let lastPyFillCutKey = undefined;
+let capGroup = new THREE.Group();   // caps of the primary half (on the plane)
+let capGeometries = [];             // shared with the caps of the copied half
+const CAP_COLOR = 0xd8c3a0;         // light wood
 
 /* Cross-section area table: unitScale = meters per one model unit
  * (set from Python via `unit_scale`, default 1.0 = model already in
@@ -809,6 +822,12 @@ function applyPendingInitialPoints() {
 
 function applyOpacity(value) {
   currentOpacity = value;
+  capMeshes().forEach((c) => {
+    c.material.transparent = value < 1.0;
+    c.material.opacity = value;
+    c.material.depthWrite = value >= 1.0;
+    c.material.needsUpdate = true;
+  });
   if (!currentObject) return;
   currentObject.traverse((child) => {
     if (child.isMesh && child.material) {
@@ -861,7 +880,7 @@ function initClipping() {
     controls.enabled = !e.value; // don't fight OrbitControls while dragging the gizmo
     if (!e.value) {
       updateClipPlaneFromObject();
-      if (showCrossSection) recomputeCrossSection();
+      if (needsCutGeometry()) recomputeCrossSection();
       updateClipInfo();
       sendValue();
     }
@@ -869,10 +888,11 @@ function initClipping() {
   transformControls.addEventListener("objectChange", () => {
     updateClipPlaneFromObject();
     updateClipInfo();
-    if (showCrossSection) scheduleRecomputeCrossSection();
+    if (needsCutGeometry()) scheduleRecomputeCrossSection();
   });
 
   scene.add(crossSectionGroup);
+  scene.add(capGroup);
   scene.add(bothHalvesGroup);
   updateClipPlaneFromObject();
 }
@@ -900,11 +920,13 @@ function bothHalvesGap() {
 /* Cheap: just repositions the already-built clone group along the
  * (possibly just-changed) plane normal. Safe to call on every drag frame. */
 function updateBothHalvesOffset() {
-  if (bothHalvesGroup.children.length === 0) return;
-  const gap = bothHalvesGap();
   // The primary object keeps the side the normal points to; the copy keeps the
   // opposite side, so it moves against the normal (away from the primary half).
-  bothHalvesGroup.position.copy(threePlane.normal).multiplyScalar(-gap);
+  // Its clip plane moves with it: a plane left in place would let the copy
+  // show a strip of the other half again, and no gap would appear.
+  const offset = threePlane.normal.clone().multiplyScalar(-bothHalvesGap());
+  cloneClipPlane.copy(threePlaneNegated).translate(offset);
+  bothHalvesGroup.position.copy(offset);
 }
 
 /* Turn a [x,y,z] position and/or [nx,ny,nz] normal coming from Python into
@@ -925,7 +947,7 @@ function setClipPlaneTransform(position, normalArr) {
     }
   }
   updateClipPlaneFromObject();
-  if (showCrossSection) recomputeCrossSection();
+  if (needsCutGeometry()) recomputeCrossSection();
   updateClipInfo();
 }
 
@@ -949,7 +971,7 @@ function initClipPlaneForModel() {
   }
   updateClipPlaneFromObject();
   applyClippingPlanes();
-  if (showCrossSection) recomputeCrossSection();
+  if (needsCutGeometry()) recomputeCrossSection();
   updateClipInfo();
 }
 
@@ -985,7 +1007,7 @@ function rebuildBothHalvesGroup() {
     const mats = Array.isArray(child.material) ? child.material : [child.material];
     const clonedMats = mats.map((m) => {
       const cm = m.clone();
-      cm.clippingPlanes = [threePlaneNegated];
+      cm.clippingPlanes = [cloneClipPlane];
       cm.needsUpdate = true;
       return cm;
     });
@@ -994,6 +1016,7 @@ function rebuildBothHalvesGroup() {
     mesh.matrixAutoUpdate = false;
     bothHalvesGroup.add(mesh);
   });
+  addCloneCaps();
   updateBothHalvesOffset();
 }
 
@@ -1049,7 +1072,8 @@ function setShowBothClipHalves(show) {
   // from the full, unclipped geometry either way, so the cut outline/fill
   // and the area table keep working when both halves are visible.
   applyClippingPlanes();
-  if (clipEnabled && showCrossSection) recomputeCrossSection();
+  if (needsCutGeometry()) recomputeCrossSection();
+  else renderCaps(null);
   updateClipInfo();
 }
 
@@ -1215,14 +1239,130 @@ function stitchSegmentsToLoops(segments, tolerance = 1e-5) {
   return loops;
 }
 
+/* The plane/mesh intersection is needed for the cross-section outline and
+ * for the caps that close the cut faces. */
+function needsCutGeometry() {
+  return showCrossSection || (clipEnabled && fillCutFaces);
+}
+
 function recomputeCrossSection() {
   if (!currentObject) return;
   updateClipPlaneFromObject();
   const loops = computeCrossSection(currentObject, threePlane);
-  renderCrossSection(loops);
-  lastCrossSectionResult = buildCrossSectionPayload(loops);
-  renderCrossSection2D(lastCrossSectionResult);
+  renderCaps(clipEnabled && fillCutFaces ? loops : null);
+  if (showCrossSection) {
+    renderCrossSection(loops);
+    lastCrossSectionResult = buildCrossSectionPayload(loops);
+    renderCrossSection2D(lastCrossSectionResult);
+  }
   updateClipInfo();
+}
+
+/* ---------- Closing the cut faces ---------- */
+
+function pointInPolygon(pt, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < (b.x - a.x) * (pt.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/* Filled shapes (with holes) from the cut outlines, in the plane's 2D axes.
+ * Outlines that do not close are closed when the opening is small compared
+ * with their size (a small hole in the scan); otherwise they are skipped. */
+function capShapes(loops, basis) {
+  const polys = [];
+  loops.forEach((pts) => {
+    if (pts.length < 4) return;
+    const first = pts[0], last = pts[pts.length - 1];
+    let ring = pts;
+    if (first.distanceToSquared(last) < 1e-8) {
+      ring = pts.slice(0, -1);
+    } else {
+      const diag = new THREE.Box3().setFromPoints(pts).getSize(new THREE.Vector3()).length();
+      if (first.distanceTo(last) > 0.1 * diag) return;
+    }
+    if (ring.length < 3) return;
+    const p2 = ring.map((p) => to2D(p, basis));
+    polys.push({ pts: p2, area: Math.abs(THREE.ShapeUtils.area(p2)), shape: null });
+  });
+  polys.sort((a, b) => b.area - a.area);
+  const shapes = [];
+  polys.forEach((poly, i) => {
+    // Inside an even number of larger outlines: a solid part; odd: a hole.
+    const containers = polys.slice(0, i).filter((o) => pointInPolygon(poly.pts[0], o.pts));
+    if (containers.length % 2 === 0) {
+      poly.shape = new THREE.Shape(poly.pts);
+      shapes.push(poly.shape);
+    } else {
+      const owner = containers[containers.length - 1];
+      if (owner.shape) owner.shape.holes.push(new THREE.Path(poly.pts));
+    }
+  });
+  return shapes;
+}
+
+function capMaterial() {
+  // Pushed slightly back, so an image overlay lying on the cut (a tomogram)
+  // is drawn over the cap instead of flickering with it.
+  return new THREE.MeshStandardMaterial({
+    color: CAP_COLOR, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide,
+    transparent: currentOpacity < 1.0, opacity: currentOpacity, depthWrite: currentOpacity >= 1.0,
+    polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+  });
+}
+
+function capMeshes() {
+  return capGroup.children.concat(bothHalvesGroup.children.filter((c) => c.userData.cap));
+}
+
+/* Caps on the cut of the primary half (on the plane) and, with both halves
+ * shown, on the cut of the copied half (moved with it). `loops` null = none. */
+function renderCaps(loops) {
+  capMeshes().forEach((m) => m.material.dispose());
+  capGroup.clear();
+  capGeometries.forEach((g) => g.dispose());
+  capGeometries = [];
+  if (loops) {
+    const basis = planeBasis(threePlane);
+    const rot = new THREE.Matrix4().makeBasis(basis.u, basis.v, basis.normal);
+    capShapes(loops, basis).forEach((shape) => {
+      try {
+        const geo = new THREE.ShapeGeometry(shape);
+        geo.applyMatrix4(rot);
+        geo.translate(basis.origin.x, basis.origin.y, basis.origin.z);
+        capGeometries.push(geo);
+        const mesh = new THREE.Mesh(geo, capMaterial());
+        mesh.userData.cap = true;
+        capGroup.add(mesh);
+      } catch (err) {
+        // Self-intersecting or degenerate outline: no cap for it.
+      }
+    });
+  }
+  addCloneCaps();
+}
+
+function addCloneCaps() {
+  bothHalvesGroup.children.filter((c) => c.userData.cap).forEach((c) => {
+    c.material.dispose();
+    bothHalvesGroup.remove(c);
+  });
+  if (!clipEnabled || !showBothClipHalves) return;
+  capGeometries.forEach((geo) => {
+    const mesh = new THREE.Mesh(geo, capMaterial());
+    mesh.userData.cap = true;
+    bothHalvesGroup.add(mesh);
+  });
+}
+
+function setFillCutFaces(fill) {
+  fillCutFaces = !!fill;
+  fillCutCheckbox.checked = fillCutFaces;
+  if (needsCutGeometry()) recomputeCrossSection();
+  else renderCaps(null);
 }
 
 function scheduleRecomputeCrossSection() {
@@ -1518,6 +1658,7 @@ function currentSettingsPayload() {
     show_both_clip_halves: showBothClipHalves,
     separate_clip_halves: bothHalvesExplode,
     show_clip_plane: clipPlaneShown,
+    fill_cut_faces: fillCutFaces,
     show_cross_section: showCrossSection,
     unit_scale: unitScale,
   };
@@ -1592,6 +1733,7 @@ function restoreConfirmedState() {
   if (typeof s.show_both_clip_halves === "boolean") setShowBothClipHalves(s.show_both_clip_halves);
   if (typeof s.separate_clip_halves === "boolean") setBothHalvesExplode(s.separate_clip_halves);
   if (typeof s.show_clip_plane === "boolean") setClipPlaneShown(s.show_clip_plane);
+  if (typeof s.fill_cut_faces === "boolean") setFillCutFaces(s.fill_cut_faces);
   if (typeof s.show_cross_section === "boolean") setShowCrossSection(s.show_cross_section);
 
   pendingChanges = false;
@@ -1825,6 +1967,7 @@ const bothHalvesCtrl = document.getElementById("clip-both-halves-ctrl");
 const bothHalvesCheckbox = document.getElementById("clip-both-halves");
 const explodeHalvesCheckbox = document.getElementById("clip-explode-halves");
 const showPlaneCheckbox = document.getElementById("clip-show-plane");
+const fillCutCheckbox = document.getElementById("clip-fill-cut");
 const crossSectionCtrl = document.getElementById("clip-cross-section-ctrl");
 const crossSectionCheckbox = document.getElementById("clip-cross-section");
 const clip2DCtrl = document.getElementById("cross-section-overlay");
@@ -1854,7 +1997,7 @@ btnClipRotate.addEventListener("click", () => {
 btnClipFlip.addEventListener("click", () => {
   clipPlaneObj.rotateY(Math.PI); // flips the local +Z axis, i.e. the plane normal
   updateClipPlaneFromObject();
-  if (showCrossSection) recomputeCrossSection();
+  if (needsCutGeometry()) recomputeCrossSection();
   updateClipInfo();
   sendValue();
 });
@@ -1874,13 +2017,18 @@ showPlaneCheckbox.addEventListener("change", () => {
   sendValue();
 });
 
+fillCutCheckbox.addEventListener("change", () => {
+  setFillCutFaces(fillCutCheckbox.checked);
+  sendValue();
+});
+
 crossSectionCheckbox.addEventListener("change", () => {
   setShowCrossSection(crossSectionCheckbox.checked);
   sendValue();
 });
 
 btnClipExport.addEventListener("click", () => {
-  if (showCrossSection) recomputeCrossSection();
+  if (needsCutGeometry()) recomputeCrossSection();
   sendValue();
 });
 
@@ -1900,7 +2048,7 @@ function nudgeClipPlane(sign, big) {
   const normal = new THREE.Vector3(0, 0, 1).applyQuaternion(clipPlaneObj.quaternion).normalize();
   clipPlaneObj.position.addScaledVector(normal, sign * step);
   updateClipPlaneFromObject();
-  if (showCrossSection) scheduleRecomputeCrossSection();
+  if (needsCutGeometry()) scheduleRecomputeCrossSection();
   updateClipInfo();
   sendValue();
 }
@@ -1910,7 +2058,7 @@ function snapClipNormalToAxis(axisVec) {
   clipPositionSetByPython = false; // a manual axis snap overrides any earlier Python pin
   clipPlaneObj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), axisVec);
   updateClipPlaneFromObject();
-  if (showCrossSection) recomputeCrossSection();
+  if (needsCutGeometry()) recomputeCrossSection();
   updateClipInfo();
   sendValue();
 }
@@ -1921,7 +2069,7 @@ function resetClipPlane() {
   clipPlaneObj.position.copy(box.getCenter(new THREE.Vector3()));
   clipPlaneObj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0));
   updateClipPlaneFromObject();
-  if (showCrossSection) recomputeCrossSection();
+  if (needsCutGeometry()) recomputeCrossSection();
   updateClipInfo();
   sendValue();
 }
@@ -2172,6 +2320,10 @@ function handleRender(args) {
   ) {
     lastPyShowPlaneKey = args.show_clip_plane;
     setClipPlaneShown(args.show_clip_plane);
+  }
+  if (typeof args.fill_cut_faces === "boolean" && args.fill_cut_faces !== lastPyFillCutKey) {
+    lastPyFillCutKey = args.fill_cut_faces;
+    setFillCutFaces(args.fill_cut_faces);
   }
   if (args.clip_plane_position || args.clip_plane_normal) {
     const key = JSON.stringify([args.clip_plane_position || null, args.clip_plane_normal || null]);

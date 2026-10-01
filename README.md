@@ -224,6 +224,7 @@ Every control in the viewer accepts an initial value as a
 | `show_both_clip_halves` | "Show both halves" checkbox | `None` = frontend keeps its state |
 | `separate_clip_halves` | "Separate halves" checkbox — nudges the two halves apart along the plane normal (see [below](#separating-vs-keeping-the-cut-halves-in-place)) | `None` = frontend keeps its state (starts on) |
 | `show_clip_plane` | "Show plane" checkbox — hide the plane and its gizmo while the model stays cut (see [below](#hiding-the-cutting-plane)) | `None` = frontend keeps its state (starts shown) |
+| `fill_cut_faces` | "Close cut faces" checkbox — solid cut faces built from the cut outline (see [below](#closing-the-cut-faces)) | `None` = frontend keeps its state (starts on) |
 | `show_cross_section` | "Show cross-section" checkbox | `False` |
 | `unit_scale` | Meters per one model unit (for the m² area table) | `1.0` |
 | `initial_points` | Points pre-placed on the model | `None` |
@@ -508,6 +509,22 @@ show_3d_viewer(
     enable_clipping=True,
     show_clip_plane=False,  # cut, but no plane drawn
 )
+```
+
+### Closing the cut faces
+
+A surface scan is an open shell: cutting it leaves an open tube, not a cut
+face. With **"Close cut faces"** on (default) the cut is filled with a solid
+colour, built from the outline where the plane crosses the model (holes
+inside the outline are kept). With "Show both halves" the moved half gets its
+own cut face, so "Separate halves" shows a real gap between two closed cuts.
+An image overlay lying on the cut (e.g. a tomogram) is drawn over the cut
+face; at overlay opacity 100 % it replaces it. Outlines that do not close (a
+large hole in the scan at the cut) are left open. The cut faces follow the
+model opacity and are rebuilt shortly after the plane stops moving.
+
+```python
+show_3d_viewer("scan.glb", enable_clipping=True, fill_cut_faces=False)  # open shell
 ```
 
 ## Notes / limitations
