@@ -420,7 +420,7 @@ let fillCutFaces = true;
 let lastPyFillCutKey = undefined;
 let capGroup = new THREE.Group();   // caps of the primary half (on the plane)
 let capGeometries = [];             // shared with the caps of the copied half
-const CAP_COLOR = 0xd8c3a0;         // light wood
+const CAP_COLOR = 0x8c8c8c;         // neutral grey: a cut face, the inside is not measured
 
 /* Cross-section area table: unitScale = meters per one model unit
  * (set from Python via `unit_scale`, default 1.0 = model already in
@@ -1260,48 +1260,54 @@ function recomputeCrossSection() {
 
 /* ---------- Closing the cut faces ---------- */
 
-function pointInPolygon(pt, poly) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i], b = poly[j];
-    if ((a.y > pt.y) !== (b.y > pt.y) && pt.x < (b.x - a.x) * (pt.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
-  }
-  return inside;
-}
-
-/* Filled shapes (with holes) from the cut outlines, in the plane's 2D axes.
- * Outlines that do not close are closed when the opening is small compared
- * with their size (a small hole in the scan); otherwise they are skipped. */
+/* The filled cut face: the outer envelope of the cut, in the plane's 2D axes.
+ * For each direction from the centre of the cut, the farthest cut point is
+ * taken, so the face covers the whole section up to the scanned surface:
+ * cavities, cracks open to the outside and gaps in the scan are all filled.
+ * An image on the cut (tomogram, photograph) therefore never shows the inside
+ * of the scan through its transparent parts. Small separate outlines (twigs,
+ * debris) do not enlarge it. Returns [] when there is nothing to fill. */
 function capShapes(loops, basis) {
-  const polys = [];
-  loops.forEach((pts) => {
-    if (pts.length < 4) return;
-    const first = pts[0], last = pts[pts.length - 1];
-    let ring = pts;
-    if (first.distanceToSquared(last) < 1e-8) {
-      ring = pts.slice(0, -1);
-    } else {
-      const diag = new THREE.Box3().setFromPoints(pts).getSize(new THREE.Vector3()).length();
-      if (first.distanceTo(last) > 0.1 * diag) return;
-    }
-    if (ring.length < 3) return;
-    const p2 = ring.map((p) => to2D(p, basis));
-    polys.push({ pts: p2, area: Math.abs(THREE.ShapeUtils.area(p2)), shape: null });
+  const lengths = loops.map((pts) => pts.reduce((sum, p, i) => i ? sum + p.distanceTo(pts[i - 1]) : 0, 0));
+  const longest = Math.max(0, ...lengths);
+  const points = [];
+  loops.forEach((pts, i) => {
+    if (pts.length >= 2 && lengths[i] >= 0.2 * longest) pts.forEach((p) => points.push(to2D(p, basis)));
   });
-  polys.sort((a, b) => b.area - a.area);
-  const shapes = [];
-  polys.forEach((poly, i) => {
-    // Inside an even number of larger outlines: a solid part; odd: a hole.
-    const containers = polys.slice(0, i).filter((o) => pointInPolygon(poly.pts[0], o.pts));
-    if (containers.length % 2 === 0) {
-      poly.shape = new THREE.Shape(poly.pts);
-      shapes.push(poly.shape);
-    } else {
-      const owner = containers[containers.length - 1];
-      if (owner.shape) owner.shape.holes.push(new THREE.Path(poly.pts));
-    }
+  if (points.length < 3) return [];
+  const centre = points.reduce((c, p) => c.add(p), new THREE.Vector2()).divideScalar(points.length);
+  // Farthest point per 1° direction; directions without a point are interpolated.
+  const BINS = 360;
+  const far = new Array(BINS).fill(-1);
+  points.forEach((p) => {
+    const d = p.clone().sub(centre);
+    const k = Math.floor(((Math.atan2(d.y, d.x) + Math.PI) / (2 * Math.PI)) * BINS) % BINS;
+    far[k] = Math.max(far[k], d.length());
   });
-  return shapes;
+  const known = far.map((r, k) => (r > 0 ? k : -1)).filter((k) => k >= 0);
+  if (known.length < 3) return [];
+  const radius = far.map((r, k) => {
+    if (r > 0) return r;
+    let a = k, b = k, da = 0, db = 0;
+    while (far[a] <= 0) { a = (a + BINS - 1) % BINS; da++; }
+    while (far[b] <= 0) { b = (b + 1) % BINS; db++; }
+    return (far[a] * db + far[b] * da) / (da + db);
+  });
+  // Closing (max, then min over ±6°): narrow inward notches, where the scan has no
+  // outer surface in a direction (cracks, gaps), are bridged; the outline is kept.
+  const W = 6;
+  const slide = (arr, f) => arr.map((_, k) => {
+    let v = arr[k];
+    for (let j = -W; j <= W; j++) v = f(v, arr[(k + j + BINS) % BINS]);
+    return v;
+  });
+  const closed = slide(slide(radius, Math.max), Math.min);
+  const ring = closed.map((r, k) => {
+    const angle = ((k + 0.5) / BINS) * 2 * Math.PI - Math.PI;
+    return new THREE.Vector2(centre.x + r * Math.cos(angle), centre.y + r * Math.sin(angle));
+  });
+  if (Math.abs(THREE.ShapeUtils.area(ring)) <= 0) return [];
+  return [new THREE.Shape(ring)];
 }
 
 function capMaterial() {

@@ -514,14 +514,16 @@ show_3d_viewer(
 ### Closing the cut faces
 
 A surface scan is an open shell: cutting it leaves an open tube, not a cut
-face. With **"Close cut faces"** on (default) the cut is filled with a solid
-colour, built from the outline where the plane crosses the model (holes
-inside the outline are kept). With "Show both halves" the moved half gets its
-own cut face, so "Separate halves" shows a real gap between two closed cuts.
-An image overlay lying on the cut (e.g. a tomogram) is drawn over the cut
-face; at overlay opacity 100 % it replaces it. Outlines that do not close (a
-large hole in the scan at the cut) are left open. The cut faces follow the
-model opacity and are rebuilt shortly after the plane stops moving.
+face. With **"Close cut faces"** on (default) the cut is filled with neutral
+grey: the outer envelope of the cut, i.e. for each direction from its centre
+up to the farthest scanned point. Cavities, cracks open to the outside and
+gaps in the scan are filled, so an image overlay lying on the cut (tomogram,
+photograph) never shows the inside of the scan or the ground through its
+transparent parts. The grey only says "cut here"; it is not a statement about
+the wood inside. Small separate outlines (twigs, debris) are ignored. With
+"Show both halves" the moved half gets its own cut face, so "Separate halves"
+shows a real gap between two closed cuts. The cut faces follow the model
+opacity and are rebuilt shortly after the plane stops moving.
 
 ```python
 show_3d_viewer("scan.glb", enable_clipping=True, fill_cut_faces=False)  # open shell

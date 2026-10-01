@@ -204,13 +204,15 @@ def show_3d_viewer(
         toggleable via the "Show plane" checkbox. If ``None`` (default),
         the frontend checkbox controls this state (starts shown).
     fill_cut_faces : bool | None
-        Close the cut faces with a solid colour, built from the outline of
-        the cut, so a surface scan looks like a solid cut log instead of an
-        open shell. With both halves shown, the moved half gets its own cut
-        face. An image overlay lying on the cut (e.g. a tomogram) is drawn
-        over it. Outlines that do not close (a large hole in the scan at the
-        cut) are left open. Also toggleable via the "Close cut faces"
-        checkbox. If ``None`` (default), the frontend checkbox controls
+        Close the cut faces with neutral grey, so a surface scan looks like a
+        solid cut log instead of an open shell. The face is the outer envelope
+        of the cut (for each direction from its centre, up to the farthest
+        scanned point): cavities, cracks open to the outside and gaps in the
+        scan are filled, so an image overlay lying on the cut (tomogram,
+        photograph) never shows the inside of the scan through its
+        transparent parts; the grey says "cut here", not "sound wood". With
+        both halves shown, the moved half gets its own cut face. Also
+        toggleable via the "Close cut faces" checkbox. If ``None`` (default), the frontend checkbox controls
         this state (starts enabled).
     show_cross_section : bool | None
         Compute and draw the polygon(s) where the cutting plane
