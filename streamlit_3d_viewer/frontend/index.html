@@ -228,11 +228,8 @@
     <div class="ctrl">
       <label id="lbl-opacity">Opacity: 100%</label>
       <input type="range" id="opacity" min="0" max="100" value="100" />
-      <!-- Shown only while an image overlay is displayed (see setOverlay). -->
-      <div id="overlay-opacity-ctrl" style="display:none; margin-top:6px;">
-        <label id="lbl-overlay-opacity">Overlay: 90%</label>
-        <input type="range" id="overlay-opacity" min="0" max="100" value="90" />
-      </div>
+      <!-- One slider per image overlay, filled by setOverlays(). -->
+      <div id="overlay-opacity-ctrl" style="display:none;"></div>
     </div>
     <div class="ctrl">
       <label id="lbl-bright">Brightness: 130%</label>
@@ -2209,76 +2206,89 @@ function updatePointsInfo() {
   document.getElementById("points-info").textContent = text;
 }
 
-/* ---------- Image overlay on a quad (e.g. a tomogram on a stem cross-section) ---------- */
-let overlayMesh = null;
+/* ---------- Image overlays on quads (e.g. a tomogram or a photo on a stem cross-section) ---------- */
+/* Several overlays may be shown; they are drawn in the given order (later ones
+ * over earlier ones) and each has its own opacity slider. An overlay's opacity
+ * from Python applies when it changes; in between, its slider sets it locally
+ * (no rerun, nothing to confirm). Slider values are kept per label. */
+let overlayItems = [];            // [{mesh, label, input, text}]
 let lastOverlayKey = null;
-/* Overlay opacity: the value from Python applies when it changes; in between,
- * the "overlay-opacity" slider sets it locally (no rerun, nothing to confirm). */
-let overlayOpacity = null;
-let lastPyOverlayOpacity = null;
-let overlayLabels = { label: "Overlay", model_label: "Model" };
+const overlayUserOpacity = {};    // label -> opacity set with the slider
+const overlayPyOpacity = {};      // label -> last opacity received from Python
+let overlayModelLabel = "Model";
 const overlayOpacityCtrl = document.getElementById("overlay-opacity-ctrl");
-const overlayOpacityInput = document.getElementById("overlay-opacity");
-const lblOverlayOpacity = document.getElementById("lbl-overlay-opacity");
 
 function modelOpacityLabel() {
-  return overlayMesh ? overlayLabels.model_label : "Opacity";
+  return overlayItems.length ? overlayModelLabel : "Opacity";
 }
 
 function updateOpacityLabels() {
   lblOpacity.textContent = `${modelOpacityLabel()}: ${opacityInput.value}%`;
-  overlayOpacityCtrl.style.display = overlayMesh ? "" : "none";
-  if (overlayMesh) {
-    overlayOpacityInput.value = Math.round(overlayOpacity * 100);
-    lblOverlayOpacity.textContent = `${overlayLabels.label}: ${overlayOpacityInput.value}%`;
-  }
+  overlayOpacityCtrl.style.display = overlayItems.length ? "" : "none";
+  overlayItems.forEach((item) => {
+    item.input.value = Math.round(item.mesh.material.opacity * 100);
+    item.text.textContent = `${item.label}: ${item.input.value}%`;
+  });
 }
 
-overlayOpacityInput.addEventListener("input", () => {
-  overlayOpacity = parseInt(overlayOpacityInput.value, 10) / 100;
-  if (overlayMesh) overlayMesh.material.opacity = overlayOpacity;
-  lblOverlayOpacity.textContent = `${overlayLabels.label}: ${overlayOpacityInput.value}%`;
-});
-
-/* `ov` = {image: data URL, corners: [[x,y,z] x 4] (bottom-left, bottom-right,
- * top-right, top-left of the image), opacity, on_top} or null to remove the overlay.
- * Drawn without the cutting plane's clipping. With `on_top` it is drawn over the
- * scan even where the surface is in front of it (visible through an opaque stem). */
-function setOverlay(ov) {
-  if (overlayMesh) {
-    scene.remove(overlayMesh);
-    overlayMesh.geometry.dispose();
-    if (overlayMesh.material.map) overlayMesh.material.map.dispose();
-    overlayMesh.material.dispose();
-    overlayMesh = null;
-  }
-  if (!ov || !ov.image || !Array.isArray(ov.corners) || ov.corners.length !== 4) {
-    updateOpacityLabels();
-    return;
-  }
-  const pyOpacity = typeof ov.opacity === "number" ? ov.opacity : 0.9;
-  if (pyOpacity !== lastPyOverlayOpacity || overlayOpacity === null) {
-    lastPyOverlayOpacity = pyOpacity;
-    overlayOpacity = pyOpacity;
-  }
-  overlayLabels = { label: ov.label || "Overlay", model_label: ov.model_label || "Model" };
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(ov.corners.flat(), 3));
-  geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
-  geo.setIndex([0, 1, 2, 0, 2, 3]);
-  const tex = textureLoader.load(ov.image);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.MeshBasicMaterial({
-    map: tex,
-    transparent: true,
-    opacity: overlayOpacity,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-    depthTest: !ov.on_top,
+function clearOverlays() {
+  overlayItems.forEach(({ mesh }) => {
+    scene.remove(mesh);
+    mesh.geometry.dispose();
+    if (mesh.material.map) mesh.material.map.dispose();
+    mesh.material.dispose();
   });
-  overlayMesh = new THREE.Mesh(geo, mat);
-  overlayMesh.renderOrder = 10;
-  scene.add(overlayMesh);
+  overlayItems = [];
+  overlayOpacityCtrl.replaceChildren();
+}
+
+/* `list` = [{image: URL, corners: [[x,y,z] x 4] (bottom-left, bottom-right,
+ * top-right, top-left of the image), opacity, on_top, label, model_label}, ...]
+ * (empty to remove all). Drawn without the cutting plane's clipping. With
+ * `on_top` an overlay is drawn over the scan even where the surface is in front
+ * of it (visible through an opaque stem). */
+function setOverlays(list) {
+  clearOverlays();
+  list = (list || []).filter((ov) => ov && ov.image && Array.isArray(ov.corners) && ov.corners.length === 4);
+  list.forEach((ov, i) => {
+    const label = ov.label || (list.length > 1 ? `Overlay ${i + 1}` : "Overlay");
+    const pyOpacity = typeof ov.opacity === "number" ? ov.opacity : 0.9;
+    if (pyOpacity !== overlayPyOpacity[label] || overlayUserOpacity[label] === undefined) {
+      overlayPyOpacity[label] = pyOpacity;
+      overlayUserOpacity[label] = pyOpacity;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(ov.corners.flat(), 3));
+    geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+    geo.setIndex([0, 1, 2, 0, 2, 3]);
+    const tex = textureLoader.load(ov.image);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      opacity: overlayUserOpacity[label],
+      side: THREE.DoubleSide,
+      depthWrite: false,       // overlays on the same plane do not hide each other ...
+      depthTest: !ov.on_top,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = 10 + i; // ... and are drawn in the given order
+    scene.add(mesh);
+    const box = document.createElement("div");
+    box.style.marginTop = "6px";
+    const text = document.createElement("label");
+    const input = document.createElement("input");
+    Object.assign(input, { type: "range", min: 0, max: 100 });
+    input.addEventListener("input", () => {
+      overlayUserOpacity[label] = parseInt(input.value, 10) / 100;
+      mat.opacity = overlayUserOpacity[label];
+      text.textContent = `${label}: ${input.value}%`;
+    });
+    box.append(text, input);
+    overlayOpacityCtrl.append(box);
+    overlayItems.push({ mesh, label, input, text });
+  });
+  overlayModelLabel = (list[0] && list[0].model_label) || "Model";
   updateOpacityLabels();
 }
 
@@ -2390,11 +2400,13 @@ function handleRender(args) {
     }
   }
   if ("overlay" in args) {
-    const ov = args.overlay;
-    const key = ov ? `${ov.image.length}|${ov.image.slice(-64)}|${JSON.stringify(ov.corners)}|${ov.opacity}|${!!ov.on_top}|${ov.label}|${ov.model_label}` : "none";
+    // One overlay (object), several (array, drawn in order) or none (null).
+    const list = Array.isArray(args.overlay) ? args.overlay : (args.overlay ? [args.overlay] : []);
+    const key = JSON.stringify(list.map((ov) => [ov.image.length, ov.image.slice(-64), ov.corners, ov.opacity,
+                                                 !!ov.on_top, ov.label, ov.model_label]));
     if (key !== lastOverlayKey) {
       lastOverlayKey = key;
-      setOverlay(ov);
+      setOverlays(list);
     }
   }
   if (Array.isArray(args.initial_points)) {

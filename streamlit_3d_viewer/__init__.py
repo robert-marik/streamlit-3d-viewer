@@ -276,7 +276,7 @@ def show_3d_viewer(
         reflects the state as of the last "Confirm changes" click, not
         the live on-screen state — it lags behind by design until the
         user confirms.
-    overlay : dict | None
+    overlay : dict | list[dict] | None
         An image drawn on a flat quad inside the scene, e.g. a tomogram
         placed on a cross-section of the stem:
         ``{"image": <PNG/JPEG data URL>, "corners": [[x, y, z] * 4],
@@ -290,7 +290,11 @@ def show_3d_viewer(
         ``label`` (default "Overlay"); the model's opacity slider is then
         labelled ``model_label`` (default "Model"). ``opacity`` is the
         initial overlay opacity, re-applied when it changes. Re-applied only when the value changes;
-        ``None`` removes it.
+        ``None`` removes it. A list of such dicts shows several images (e.g. a
+        photograph of the cross-section under a tomogram), drawn in the given
+        order, later ones over earlier ones; each gets its own opacity slider,
+        labelled with its ``label`` (labels should differ). ``model_label`` is
+        taken from the first one.
     key : str | None
         Streamlit component key.
 
@@ -358,17 +362,22 @@ def show_3d_viewer(
         default=_EMPTY_VALUE,
         key=key,
     )
-    if overlay is not None:
-        corners = [[float(v) for v in c] for c in overlay["corners"]]
+    def _overlay(item):
+        corners = [[float(v) for v in c] for c in item["corners"]]
         if len(corners) != 4 or any(len(c) != 3 for c in corners):
             raise ValueError("overlay['corners'] must be four [x, y, z] points.")
-        kwargs["overlay"] = {"image": str(overlay["image"]), "corners": corners,
-                             "opacity": float(overlay.get("opacity", 0.9)),
-                             "on_top": bool(overlay.get("on_top", False)),
-                             "label": str(overlay.get("label", "Overlay")),
-                             "model_label": str(overlay.get("model_label", "Model"))}
-    else:
+        return {"image": str(item["image"]), "corners": corners,
+                "opacity": float(item.get("opacity", 0.9)),
+                "on_top": bool(item.get("on_top", False)),
+                "label": str(item.get("label", "Overlay")),
+                "model_label": str(item.get("model_label", "Model"))}
+
+    if overlay is None:
         kwargs["overlay"] = None
+    elif isinstance(overlay, (list, tuple)):
+        kwargs["overlay"] = [_overlay(item) for item in overlay]
+    else:
+        kwargs["overlay"] = _overlay(overlay)
     if enable_clipping is not None:
         kwargs["enable_clipping"] = bool(enable_clipping)
     if show_cross_section is not None:

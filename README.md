@@ -319,6 +319,19 @@ model's opacity slider; it works locally, without a Streamlit rerun. Like the ot
 only when the value changes; passing `None` removes it. `corners` must be
 exactly four `[x, y, z]` points, otherwise `ValueError` is raised.
 
+`overlay` can also be a **list** of such dicts, e.g. a photograph of the
+cross-section with a tomogram over it. They are drawn in the given order,
+later ones over earlier ones, and each gets its own opacity slider (labelled
+with its `label`, which should differ), so the tomogram can be faded while the
+photograph and the model stay opaque. `model_label` is taken from the first.
+
+```python
+show_3d_viewer("scan.glb", overlay=[
+    {"image": photo_url, "corners": photo_corners, "opacity": 1.0, "label": "Photo", "model_label": "Stem"},
+    {"image": tomo_url, "corners": tomo_corners, "opacity": 0.6, "label": "Tomogram"},
+])
+```
+
 ### Minimizing reruns
 
 By default (`point_submit_mode="immediate"`), **every** interaction sends
