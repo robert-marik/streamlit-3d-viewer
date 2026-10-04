@@ -509,6 +509,14 @@ show_3d_viewer(
 Like the other cutting-plane toggles, leave it as `None` (the default)
 to let the on-screen checkbox control it.
 
+### Fullscreen and folding the controls
+
+The ⛶ button in the top-left corner of the scene shows the viewer fullscreen
+(✕ or Esc to leave). The **▾ Controls** bar under the scene folds all
+controls in or out. In fullscreen they start folded, so the scene fills the
+screen; unfold them to change an opacity or confirm changes. Leaving
+fullscreen restores the previous state. Keyboard shortcuts work either way.
+
 ### Hiding the cutting plane
 
 The **"Show plane"** checkbox (below "Separate halves") hides the

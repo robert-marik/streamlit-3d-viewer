@@ -31,6 +31,15 @@
     background: #ffffff; padding: 8px; box-sizing: border-box;
   }
   #app:fullscreen #canvas-wrap { flex: 1 1 auto; height: auto; min-height: 300px; border-radius: 0; }
+  #app:fullscreen #controls { flex: 0 0 auto; max-height: 45vh; overflow: auto; }
+  /* Fold the controls below the scene (in fullscreen they start folded). */
+  #controls-toggle {
+    display: block; width: 100%; margin: 4px 0; padding: 3px 8px; text-align: left;
+    font: inherit; font-size: 13px; font-weight: 600; color: #333333;
+    background: #ececec; border: 1px solid #d0d0d0; border-radius: 6px; cursor: pointer;
+  }
+  #controls-toggle:hover { background: #e2e2e2; }
+  #controls.folded { display: none; }
   #btn-fullscreen {
     position: absolute; top: 10px; left: 10px; z-index: 20;
     width: 32px; height: 32px; padding: 0; font-size: 18px; line-height: 30px;
@@ -216,6 +225,8 @@
     </div>
   </div>
 
+  <button id="controls-toggle" type="button" aria-expanded="true">&#x25BE; Controls</button>
+  <div id="controls">
   <div id="panel">
     <div class="ctrl">
       <label id="lbl-elev">Elevation: 60°</label>
@@ -288,6 +299,7 @@
       <b>F</b> flip side &middot; <b>B</b> both halves &middot; <b>S</b> cross-section &middot; <b>R</b> reset cut
     </div>
   </div>
+</div>
 </div>
 
 <script type="importmap">
@@ -1056,6 +1068,7 @@ function setControlsVisible(visible) {
   document.getElementById("mesh-info").style.display = display;
   document.getElementById("points-info").style.display = display;
   document.getElementById("hint").style.display = display;
+  document.getElementById("controls-toggle").style.display = display;
   applyClipGizmoVisibility();
   updateEdgeIndicators();
 }
@@ -2469,6 +2482,21 @@ if (typeof ResizeObserver !== "undefined") {
 
 /* Fullscreen toggle for the whole viewer (scene + panels). Streamlit allows
  * "fullscreen" in the component iframe's feature policy. */
+/* Fold / unfold the controls below the scene. Outside fullscreen they start
+ * unfolded; entering fullscreen folds them so the scene fills the screen,
+ * leaving fullscreen restores the previous state. */
+const controlsEl = document.getElementById("controls");
+const controlsToggle = document.getElementById("controls-toggle");
+let foldedBeforeFullscreen = false;
+function setControlsFolded(folded) {
+  controlsEl.classList.toggle("folded", folded);
+  controlsToggle.innerHTML = (folded ? "&#x25B8;" : "&#x25BE;") + " Controls";
+  controlsToggle.setAttribute("aria-expanded", String(!folded));
+  onResize();
+  if (!document.fullscreenElement) stSetFrameHeight(document.getElementById("app").scrollHeight);
+}
+controlsToggle.addEventListener("click", () => setControlsFolded(!controlsEl.classList.contains("folded")));
+
 (function initFullscreen() {
   const btn = document.getElementById("btn-fullscreen");
   const appEl = document.getElementById("app");
@@ -2484,6 +2512,12 @@ if (typeof ResizeObserver !== "undefined") {
     btn.innerHTML = active ? "&#x2715;" : "&#x26F6;";
     btn.title = active ? "Exit fullscreen" : "Fullscreen";
     btn.setAttribute("aria-label", btn.title);
+    if (active) {
+      foldedBeforeFullscreen = controlsEl.classList.contains("folded");
+      setControlsFolded(true);
+    } else {
+      setControlsFolded(foldedBeforeFullscreen);
+    }
     onResize();
     if (!active) stSetFrameHeight(appEl.scrollHeight);
   });
